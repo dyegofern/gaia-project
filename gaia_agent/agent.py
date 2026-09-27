@@ -55,7 +55,20 @@ class GaiaAgent:
         ]
 
         last_content = ""
-        for _ in range(MAX_ITERATIONS):
+        nudged = False
+        stopped_early = False
+        for i in range(MAX_ITERATIONS):
+            if not nudged and i >= MAX_ITERATIONS - 2:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "You are running low on tool calls. Synthesize a FINAL ANSWER "
+                        "from the information you already have unless one more targeted "
+                        "lookup is truly necessary."
+                    ),
+                })
+                nudged = True
+
             response = chat_completion(messages, tools=TOOLS)
             message = response.choices[0].message
 
@@ -71,7 +84,19 @@ class GaiaAgent:
                 continue
 
             last_content = message.content or ""
+            stopped_early = True
             break
+
+        if not stopped_early:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "No more tool calls are allowed. Based on everything gathered so "
+                    "far, give your best-effort FINAL ANSWER now."
+                ),
+            })
+            response = chat_completion(messages, tools=None)
+            last_content = response.choices[0].message.content or ""
 
         return self._extract_final_answer(last_content)
 
