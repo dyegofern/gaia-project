@@ -1,7 +1,25 @@
 # tests/test_agent.py
 from unittest.mock import patch, MagicMock
 
+from openai import BadRequestError
+
 from gaia_agent.agent import GaiaAgent, MAX_ITERATIONS
+
+
+def _make_fake_api_error():
+    # BadRequestError (a subclass of openai.APIError, the class agent.py
+    # catches) requires a `response` object with `.request` at construction
+    # time; a MagicMock satisfies that without needing a real httpx response.
+    fake_response = MagicMock()
+    fake_response.request = MagicMock()
+    fake_response.status_code = 400
+    return BadRequestError(
+        "Tool call validation failed: tool call validation failed: attempted "
+        "to call tool 'fetch_page<|channel|>commentary' which was not in "
+        "request.tools",
+        response=fake_response,
+        body=None,
+    )
 
 
 def _make_tool_call_response():
@@ -81,6 +99,65 @@ def test_agent_never_injects_a_system_message_after_the_first():
     final_messages = captured_messages[-1]
     system_message_indices = [i for i, m in enumerate(final_messages) if m["role"] == "system"]
     assert system_message_indices == [0]
+
+
+def test_agent_retries_once_on_api_error_then_continues():
+    # First call raises the API error; the retry (second call) succeeds
+    # with a normal tool-call response; then the loop proceeds normally to
+    # a final answer.
+    responses = [
+        _make_fake_api_error(),
+        _make_tool_call_response(),
+        _make_final_response("FINAL ANSWER: Paris"),
+    ]
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=responses) as mock_chat, \
+         patch("gaia_agent.agent.web_search", return_value="some search result snippet"):
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert answer.strip() == "Paris"
+    assert answer != ""
+    assert mock_chat.call_count == 3
+
+
+def test_agent_falls_back_to_final_answer_after_two_consecutive_api_errors():
+    # The first call and its retry both raise the API error; the agent
+    # should then abandon the tool-calling loop and go straight to the
+    # forced-final-answer fallback call (made with tools=None), which
+    # succeeds here.
+    responses = [
+        _make_fake_api_error(),
+        _make_fake_api_error(),
+        _make_final_response("FINAL ANSWER: Paris"),
+    ]
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=responses) as mock_chat:
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert answer.strip() == "Paris"
+    # Original call + one retry + the forced-final-answer fallback call.
+    assert mock_chat.call_count == 3
+    last_call = mock_chat.call_args
+    args, kwargs = last_call
+    tools_arg = kwargs.get("tools", None) if "tools" in kwargs else (args[1] if len(args) > 1 else None)
+    assert tools_arg is None
+
+
+def test_agent_returns_error_string_if_final_answer_call_also_fails():
+    # Every call, including the forced-final-answer fallback, raises the
+    # API error. __call__ must never raise -- it should return an
+    # informative error string instead.
+    def always_fail(*args, **kwargs):
+        raise _make_fake_api_error()
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=always_fail):
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert isinstance(answer, str)
+    assert "error" in answer.lower()
 
 
 def test_agent_answers_simple_question_without_tools():

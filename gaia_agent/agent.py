@@ -1,5 +1,7 @@
 import json
 
+from openai import APIError
+
 from gaia_agent.llm import chat_completion
 from gaia_agent.tools import (
     web_search, WEB_SEARCH_SCHEMA,
@@ -69,7 +71,26 @@ class GaiaAgent:
                 })
                 nudged = True
 
-            response = chat_completion(messages, tools=TOOLS)
+            try:
+                response = chat_completion(messages, tools=TOOLS)
+            except APIError:
+                # The server rejected the model's own generation (e.g. a
+                # malformed tool-call name with leaked internal formatting
+                # tokens) before returning any response object -- there is
+                # no valid assistant message to append and no tool_call_id
+                # to respond to, so a targeted retry-with-same-messages is
+                # the best we can do here (sampling is non-deterministic,
+                # so a second attempt has a real chance of succeeding).
+                try:
+                    response = chat_completion(messages, tools=TOOLS)
+                except APIError:
+                    # Two consecutive failures: give up on the tool-calling
+                    # loop for this question and fall through to the
+                    # forced-final-answer fallback below, using whatever
+                    # conversation history (including prior successful tool
+                    # calls) has accumulated so far.
+                    break
+
             message = response.choices[0].message
 
             if message.tool_calls:
@@ -95,8 +116,11 @@ class GaiaAgent:
                     "far, give your best-effort FINAL ANSWER now."
                 ),
             })
-            response = chat_completion(messages, tools=None)
-            last_content = response.choices[0].message.content or ""
+            try:
+                response = chat_completion(messages, tools=None)
+                last_content = response.choices[0].message.content or ""
+            except APIError:
+                return "AGENT ERROR: could not produce a final answer after repeated API errors"
 
         return self._extract_final_answer(last_content)
 
