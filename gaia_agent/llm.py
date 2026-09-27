@@ -1,7 +1,46 @@
 # gaia_agent/llm.py
 import os
+import socket
 
 from openai import OpenAI
+
+_ipv4_patch_applied = False
+
+
+def _force_ipv4_dns():
+    """Force IPv4-only DNS resolution, process-wide, exactly once.
+
+    This machine's outbound IPv6 routing is broken: SYN packets to IPv6
+    addresses go out but never get a response (confirmed via `ss -tnp`
+    showing connections stuck in SYN-SENT to api.groq.com's IPv6
+    address). Hosts like api.groq.com resolve to both A and AAAA
+    records, and httpx/httpcore (used by the `openai` SDK) do not
+    implement Happy-Eyeballs-style racing/fallback between address
+    families the way a browser would -- they just try one address
+    (often IPv6 first) and can hang far past any configured request
+    timeout, since a SYN that gets no response at all outlasts normal
+    socket read timeouts.
+
+    Monkeypatching `socket.getaddrinfo` to only ever return IPv4
+    results is the simplest reliable fix, and doing it process-wide
+    (rather than scoped to one httpx transport) is desirable here: it
+    protects any other library in this process that might hit a
+    dual-stack host over this same broken network path.
+    """
+    global _ipv4_patch_applied
+    if _ipv4_patch_applied:
+        return
+
+    _orig_getaddrinfo = socket.getaddrinfo
+
+    def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+    socket.getaddrinfo = _ipv4_only_getaddrinfo
+    _ipv4_patch_applied = True
+
+
+_force_ipv4_dns()
 
 LEMONADE_BASE_URL = "http://localhost:13305/api/v0"
 LEMONADE_MODEL = "Qwen3.5-35B-A3B-GGUF"
