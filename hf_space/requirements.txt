@@ -1,0 +1,9 @@
+gradio
+requests
+openai>=1.0
+beautifulsoup4>=4.0
+ddgs>=9.0
+trafilatura>=1.0
+pypdf>=4.0
+openpyxl>=3.0
+pandas>=2.0
