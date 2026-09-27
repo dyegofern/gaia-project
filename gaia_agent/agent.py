@@ -26,11 +26,16 @@ answer keys or discussions of this exact question may be indexed online, but usi
 would not be a genuine answer. Always derive the answer yourself from the question's own
 attached file or the sources it points to.
 
-When you know the final answer, respond with a line in exactly this format and nothing else:
-FINAL ANSWER: <answer>
+Report your thoughts, and finish your answer with a line in exactly this format:
+FINAL ANSWER: [YOUR FINAL ANSWER]
 
-The answer must be as short as possible: a number, a word, a short phrase, or a
-comma-separated list — with no explanation, units unless asked, or extra text."""
+YOUR FINAL ANSWER should be a number OR as few words as possible OR a comma separated
+list of numbers and/or strings. If you are asked for a number, don't use commas to write
+your number, and don't use units such as $ or % unless specified otherwise. If you are
+asked for a string, don't use articles ("a", "the"), don't use abbreviations (e.g. write
+city names in full), and write digits in plain text (e.g. "seven" not "7") unless
+specified otherwise. If you are asked for a comma separated list, apply the rules above
+to each element, with exactly one space after each comma."""
 
 TOOLS = [
     WEB_SEARCH_SCHEMA,
@@ -185,11 +190,13 @@ class GaiaAgent:
             except APIError:
                 return "AGENT ERROR: could not produce a final answer after repeated API errors"
 
-            # Even with tools=None, some models still write an informal
-            # tool-call pattern into content out of habit. No more tool
-            # calls are allowed at this point, so don't execute it --
-            # just strip it out and force one more genuinely-final call.
-            if _parse_informal_tool_call(last_content):
+            # Even with tools=None, some models persistently write an
+            # informal tool-call pattern into content out of habit. No more
+            # tool calls are allowed at this point, so don't execute it --
+            # retry a bounded number of times to get a clean answer instead.
+            retries = 0
+            while _parse_informal_tool_call(last_content) and retries < 2:
+                retries += 1
                 messages.append({
                     "role": "user",
                     "content": (
@@ -226,5 +233,8 @@ class GaiaAgent:
     def _extract_final_answer(self, content: str) -> str:
         marker = "FINAL ANSWER:"
         if marker in content:
-            return content.split(marker, 1)[1].strip()
-        return content.strip()
+            content = content.split(marker, 1)[1]
+        # Last-resort safety net: never surface a leaked, unexecuted
+        # informal tool call as if it were an answer, however it got here.
+        content = INFORMAL_TOOL_CALL_RE.sub("", content)
+        return content.strip() or "AGENT ERROR: model produced no usable answer"
