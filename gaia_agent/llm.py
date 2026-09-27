@@ -7,7 +7,7 @@ LEMONADE_BASE_URL = "http://localhost:13305/api/v0"
 LEMONADE_MODEL = "Qwen3.5-35B-A3B-GGUF"
 
 HF_BASE_URL = "https://router.huggingface.co/v1"
-HF_MODEL = "openai/gpt-oss-120b"
+HF_MODEL = os.environ.get("GAIA_HF_MODEL", "openai/gpt-oss-120b")
 
 _clients = {}
 
