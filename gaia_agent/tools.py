@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import sys
 import tempfile
 
 import pandas as pd
@@ -189,7 +190,11 @@ TRANSCRIBE_AUDIO_SCHEMA = {
 }
 
 
-ROCM10_PYTHON = "/home/dyego/rocm10-test/bin/python"
+_LOCAL_ROCM10_PYTHON = "/home/dyego/rocm10-test/bin/python"
+ROCM10_PYTHON = os.environ.get(
+    "GAIA_PYTHON_EXEC_INTERPRETER",
+    _LOCAL_ROCM10_PYTHON if os.path.exists(_LOCAL_ROCM10_PYTHON) else sys.executable,
+)
 PYTHON_EXEC_TIMEOUT = 30
 
 

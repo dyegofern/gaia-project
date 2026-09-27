@@ -253,7 +253,7 @@ def test_agent_strips_informal_tool_call_from_forced_final_answer():
     responses.append(_make_final_response("FINAL ANSWER: Paris"))
 
     with patch("gaia_agent.agent.chat_completion", side_effect=responses) as mock_chat, \
-         patch("gaia_agent.agent.web_search", return_value="some search result snippet"):
+         patch("gaia_agent.agent.TOOL_FUNCTIONS", {"web_search": MagicMock(return_value="some search result snippet")}):
         agent = GaiaAgent()
         answer = agent("What is the capital of France?")
 
@@ -273,7 +273,7 @@ def test_agent_never_returns_raw_informal_tool_call_xml_as_final_answer():
     ]
 
     with patch("gaia_agent.agent.chat_completion", side_effect=responses), \
-         patch("gaia_agent.agent.web_search", return_value="some search result snippet"):
+         patch("gaia_agent.agent.TOOL_FUNCTIONS", {"web_search": MagicMock(return_value="some search result snippet")}):
         agent = GaiaAgent()
         answer = agent("What is the capital of France?")
 
