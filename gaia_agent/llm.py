@@ -1,5 +1,6 @@
 # gaia_agent/llm.py
 import os
+import re
 import socket
 import time
 
@@ -113,20 +114,23 @@ def _get_client_and_model():
     return _clients[backend]
 
 
+_RESET_DURATION_RE = re.compile(
+    r"(?:(?P<h>\d+(?:\.\d+)?)h)?(?:(?P<m>\d+(?:\.\d+)?)m(?!s))?(?:(?P<s>\d+(?:\.\d+)?)s)?"
+)
+
+
 def _parse_reset_seconds(value):
-    # Groq/OpenAI-style headers give durations like "12.5s" or "1m30s".
+    # Groq-style headers give durations like "12.5s", "1m2.5s", or "1h16m19.2s".
     if value is None:
         return None
     value = value.strip().lower()
-    if value.endswith("s") and "m" not in value:
-        try:
-            return float(value[:-1])
-        except ValueError:
-            return None
-    try:
-        return float(value)
-    except ValueError:
+    match = _RESET_DURATION_RE.fullmatch(value)
+    if not match or not any(match.groups()):
         return None
+    hours = float(match.group("h") or 0)
+    minutes = float(match.group("m") or 0)
+    seconds = float(match.group("s") or 0)
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def _maybe_wait_for_rate_limit(response, low_watermark=1000):
@@ -155,7 +159,10 @@ def _maybe_wait_for_rate_limit(response, low_watermark=1000):
 
     wait_seconds = _parse_reset_seconds(reset)
     if wait_seconds is not None and wait_seconds > 0:
-        time.sleep(wait_seconds)
+        # Cap the wait: this is meant to smooth over a rolling per-minute
+        # token window, not to block indefinitely if a header is ever
+        # misread or a much longer (e.g. daily) limit is reported here.
+        time.sleep(min(wait_seconds, 90))
 
 
 def chat_completion(messages, tools=None, timeout=120):
