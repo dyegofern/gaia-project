@@ -1,5 +1,7 @@
 import os
 import re
+import subprocess
+import tempfile
 
 import pandas as pd
 import requests
@@ -145,6 +147,48 @@ READ_FILE_SCHEMA = {
                 "path": {"type": "string", "description": "Local filesystem path to the file."}
             },
             "required": ["path"],
+        },
+    },
+}
+
+
+ROCM10_PYTHON = "/home/dyego/rocm10-test/bin/python"
+PYTHON_EXEC_TIMEOUT = 30
+
+
+def python_exec(code: str) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+        f.write(code)
+        script_path = f.name
+
+    try:
+        proc = subprocess.run(
+            [ROCM10_PYTHON, script_path],
+            capture_output=True,
+            text=True,
+            timeout=PYTHON_EXEC_TIMEOUT,
+        )
+        output = proc.stdout
+        if proc.returncode != 0:
+            output += "\n" + proc.stderr
+        return output.strip() or "(no output)"
+    except subprocess.TimeoutExpired:
+        return f"TIMEOUT: code did not finish within {PYTHON_EXEC_TIMEOUT}s"
+    finally:
+        os.remove(script_path)
+
+
+PYTHON_EXEC_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "python_exec",
+        "description": "Run a Python script (with numpy/pandas/torch available) and return its stdout/stderr. Use for calculations or data processing.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "The Python source code to execute."}
+            },
+            "required": ["code"],
         },
     },
 }

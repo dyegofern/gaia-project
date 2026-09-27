@@ -39,3 +39,21 @@ def test_read_file_plain_text(tmp_path):
 def test_read_file_missing_returns_error():
     result = read_file("/nonexistent/path/file.txt")
     assert result.startswith("ERROR")
+
+
+from gaia_agent.tools import python_exec
+
+
+def test_python_exec_prints_output():
+    result = python_exec("print(2 + 2)")
+    assert "4" in result
+
+
+def test_python_exec_captures_errors():
+    result = python_exec("raise ValueError('boom')")
+    assert "boom" in result
+
+
+def test_python_exec_times_out_long_running_code():
+    result = python_exec("import time; time.sleep(60)")
+    assert "TIMEOUT" in result
