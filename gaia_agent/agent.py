@@ -180,6 +180,25 @@ class GaiaAgent:
             except APIError:
                 return "AGENT ERROR: could not produce a final answer after repeated API errors"
 
+            # Even with tools=None, some models still write an informal
+            # tool-call pattern into content out of habit. No more tool
+            # calls are allowed at this point, so don't execute it --
+            # just strip it out and force one more genuinely-final call.
+            if _parse_informal_tool_call(last_content):
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Tool calls are no longer available. Do not write a tool call -- "
+                        "just answer directly with FINAL ANSWER: <answer> based on what "
+                        "you already know."
+                    ),
+                })
+                try:
+                    response = chat_completion(messages, tools=None)
+                    last_content = response.choices[0].message.content or ""
+                except APIError:
+                    return "AGENT ERROR: could not produce a final answer after repeated API errors"
+
         return self._extract_final_answer(last_content)
 
     def _run_tool(self, tool_call) -> str:

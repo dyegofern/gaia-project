@@ -242,6 +242,27 @@ def test_agent_executes_informal_tool_call_written_into_content():
     assert mock_chat.call_count == 2
 
 
+def test_agent_strips_informal_tool_call_from_forced_final_answer():
+    # If the model still writes an informal tool call into content on the
+    # very last, tools=None call (after MAX_ITERATIONS is exhausted), the
+    # agent must not return that raw XML as the final answer -- there are
+    # no more tool calls available to execute it, so it must force one
+    # more plain-answer call instead.
+    responses = [_make_tool_call_response() for _ in range(MAX_ITERATIONS)]
+    responses.append(_make_informal_tool_call_response("web_search", {"query": "test query"}))
+    responses.append(_make_final_response("FINAL ANSWER: Paris"))
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=responses) as mock_chat, \
+         patch("gaia_agent.agent.web_search", return_value="some search result snippet"):
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert answer.strip() == "Paris"
+    assert "<tool_call>" not in answer
+    # MAX_ITERATIONS calls + the informal-tool-call attempt + one more forced call.
+    assert mock_chat.call_count == MAX_ITERATIONS + 2
+
+
 def test_agent_never_returns_raw_informal_tool_call_xml_as_final_answer():
     # Regression guard: if parsing/execution of the informal tool call ever
     # regresses, the agent must not silently return the raw XML as if it
