@@ -73,14 +73,23 @@ class GaiaAgent:
 
             try:
                 response = chat_completion(messages, tools=TOOLS)
-            except APIError:
+            except APIError as e:
                 # The server rejected the model's own generation (e.g. a
                 # malformed tool-call name with leaked internal formatting
                 # tokens) before returning any response object -- there is
                 # no valid assistant message to append and no tool_call_id
-                # to respond to, so a targeted retry-with-same-messages is
-                # the best we can do here (sampling is non-deterministic,
-                # so a second attempt has a real chance of succeeding).
+                # to respond to. Tell the model what went wrong and ask it
+                # to retry with a valid tool call, using the same backend
+                # (no need to switch models -- a corrective nudge is usually
+                # enough for the model to self-correct on the next sample).
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Your last tool call was rejected as invalid "
+                        f"({e}). Retry with a valid tool call using exactly "
+                        "one of the available tool names."
+                    ),
+                })
                 try:
                     response = chat_completion(messages, tools=TOOLS)
                 except APIError:

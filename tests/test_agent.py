@@ -101,6 +101,35 @@ def test_agent_never_injects_a_system_message_after_the_first():
     assert system_message_indices == [0]
 
 
+def test_agent_injects_corrective_message_before_retrying_after_api_error():
+    # After an API error, the retry should not be a blind identical call --
+    # the conversation should include a corrective user message describing
+    # the failure, so the model has a real chance to self-correct instead of
+    # just re-sampling the same broken generation.
+    responses = [
+        _make_fake_api_error(),
+        _make_final_response("FINAL ANSWER: Paris"),
+    ]
+
+    captured_messages = []
+
+    def fake_chat_completion(messages, tools=None, **kwargs):
+        captured_messages.append([dict(m) for m in messages])
+        response = responses[len(captured_messages) - 1]
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=fake_chat_completion):
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert answer.strip() == "Paris"
+    retry_messages = captured_messages[-1]
+    assert retry_messages[-1]["role"] == "user"
+    assert "invalid" in retry_messages[-1]["content"].lower() or "rejected" in retry_messages[-1]["content"].lower()
+
+
 def test_agent_retries_once_on_api_error_then_continues():
     # First call raises the API error; the retry (second call) succeeds
     # with a normal tool-call response; then the loop proceeds normally to
