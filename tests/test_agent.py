@@ -202,3 +202,59 @@ def test_agent_can_use_web_search_tool():
         "Reply with just the year as a number."
     )
     assert "1889" in answer
+
+
+def _make_informal_tool_call_response(function_name, params, trailing_content=""):
+    # Some models (e.g. Qwen3.5 on Lemonade) sometimes write tool calls as
+    # informal XML-like text directly into `content` instead of using the
+    # structured `tool_calls` API field. The agent must detect and execute
+    # these rather than treating the raw XML text as the final answer.
+    param_lines = "".join(
+        f"<parameter={name}>\n{value}\n</parameter>\n" for name, value in params.items()
+    )
+    content = (
+        f"<tool_call>\n<function={function_name}>\n{param_lines}</function>\n</tool_call>"
+        f"{trailing_content}"
+    )
+    message = MagicMock()
+    message.tool_calls = None
+    message.content = content
+    message.model_dump.return_value = {"role": "assistant", "content": content}
+
+    response = MagicMock()
+    response.choices = [MagicMock(message=message)]
+    return response
+
+
+def test_agent_executes_informal_tool_call_written_into_content():
+    responses = [
+        _make_informal_tool_call_response("web_search", {"query": "test query"}),
+        _make_final_response("FINAL ANSWER: Paris"),
+    ]
+
+    with patch("gaia_agent.agent.TOOL_FUNCTIONS", {"web_search": MagicMock(return_value="some search result snippet")}) as tool_functions, \
+         patch("gaia_agent.agent.chat_completion", side_effect=responses) as mock_chat:
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert answer.strip() == "Paris"
+    tool_functions["web_search"].assert_called_once_with(query="test query")
+    assert mock_chat.call_count == 2
+
+
+def test_agent_never_returns_raw_informal_tool_call_xml_as_final_answer():
+    # Regression guard: if parsing/execution of the informal tool call ever
+    # regresses, the agent must not silently return the raw XML as if it
+    # were a real answer.
+    responses = [
+        _make_informal_tool_call_response("web_search", {"query": "test query"}),
+        _make_final_response("FINAL ANSWER: Paris"),
+    ]
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=responses), \
+         patch("gaia_agent.agent.web_search", return_value="some search result snippet"):
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert "<tool_call>" not in answer
+    assert "<function=" not in answer

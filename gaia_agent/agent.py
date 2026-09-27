@@ -1,4 +1,5 @@
 import json
+import re
 
 from openai import APIError
 
@@ -40,6 +41,33 @@ TOOL_FUNCTIONS = {
 }
 
 MAX_ITERATIONS = 10
+
+# Some models (e.g. Qwen3.5 on Lemonade) sometimes write tool calls as
+# informal XML-like text directly into the message `content` instead of
+# using the structured `tool_calls` API field. Detect and parse that
+# pattern so it can be executed like a real tool call rather than being
+# mistaken for the final answer.
+INFORMAL_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*<function=([\w.-]+)>(.*?)</function>\s*</tool_call>",
+    re.DOTALL,
+)
+INFORMAL_PARAMETER_RE = re.compile(
+    r"<parameter=([\w.-]+)>(.*?)</parameter>",
+    re.DOTALL,
+)
+
+
+def _parse_informal_tool_call(content: str):
+    match = INFORMAL_TOOL_CALL_RE.search(content or "")
+    if not match:
+        return None
+    name = match.group(1)
+    params_blob = match.group(2)
+    args = {
+        pname: pvalue.strip()
+        for pname, pvalue in INFORMAL_PARAMETER_RE.findall(params_blob)
+    }
+    return name, args
 
 
 class GaiaAgent:
@@ -113,6 +141,22 @@ class GaiaAgent:
                     })
                 continue
 
+            informal_call = _parse_informal_tool_call(message.content)
+            if informal_call:
+                name, args = informal_call
+                messages.append(message.model_dump(exclude_none=True))
+                result = self._run_tool_by_name(name, args)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"(Note: your tool call for {name} was written as plain text "
+                        "instead of using the tool-calling API -- I ran it anyway. "
+                        "Please use the structured tool-calling mechanism going forward.)\n\n"
+                        f"Result: {result}"
+                    ),
+                })
+                continue
+
             last_content = message.content or ""
             stopped_early = True
             break
@@ -135,13 +179,16 @@ class GaiaAgent:
 
     def _run_tool(self, tool_call) -> str:
         name = tool_call.function.name
-        func = TOOL_FUNCTIONS.get(name)
-        if func is None:
-            return f"ERROR: unknown tool {name}"
         try:
             args = json.loads(tool_call.function.arguments)
         except Exception as e:
             return f"ERROR: could not parse arguments for {name}: {e}"
+        return self._run_tool_by_name(name, args)
+
+    def _run_tool_by_name(self, name: str, args: dict) -> str:
+        func = TOOL_FUNCTIONS.get(name)
+        if func is None:
+            return f"ERROR: unknown tool {name}"
         try:
             return func(**args)
         except Exception as e:
