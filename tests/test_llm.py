@@ -24,3 +24,19 @@ def test_hf_backend_raises_clear_error_without_token(monkeypatch):
     messages = [{"role": "user", "content": "Reply with exactly the word: PONG"}]
     with pytest.raises(RuntimeError, match="HF_TOKEN"):
         chat_completion(messages)
+
+
+def test_chat_completion_with_groq_backend_returns_content(monkeypatch):
+    monkeypatch.setenv("GAIA_LLM_BACKEND", "groq")
+    messages = [{"role": "user", "content": "Reply with exactly the word: PONG"}]
+    response = chat_completion(messages)
+    assert response.choices[0].message.content is not None
+    assert len(response.choices[0].message.content) > 0
+
+
+def test_groq_backend_raises_clear_error_without_token(monkeypatch):
+    monkeypatch.setenv("GAIA_LLM_BACKEND", "groq")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    messages = [{"role": "user", "content": "Reply with exactly the word: PONG"}]
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+        chat_completion(messages)

@@ -9,6 +9,9 @@ LEMONADE_MODEL = "Qwen3.5-35B-A3B-GGUF"
 HF_BASE_URL = "https://router.huggingface.co/v1"
 HF_MODEL = os.environ.get("GAIA_HF_MODEL", "openai/gpt-oss-120b")
 
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_MODEL = os.environ.get("GAIA_GROQ_MODEL", "openai/gpt-oss-120b")
+
 _clients = {}
 
 
@@ -16,6 +19,10 @@ def _build_backend(backend):
     if backend == "hf":
         client = OpenAI(base_url=HF_BASE_URL, api_key=os.environ["HF_TOKEN"])
         return client, HF_MODEL
+
+    if backend == "groq":
+        client = OpenAI(base_url=GROQ_BASE_URL, api_key=os.environ["GROQ_API_KEY"])
+        return client, GROQ_MODEL
 
     client = OpenAI(base_url=LEMONADE_BASE_URL, api_key="not-needed")
     return client, LEMONADE_MODEL
@@ -32,6 +39,16 @@ def _get_client_and_model():
             "GAIA_LLM_BACKEND is set to 'hf' but the HF_TOKEN environment "
             "variable is not set. Set HF_TOKEN to a Hugging Face access "
             "token to use the Hugging Face Inference Providers backend."
+        )
+
+    if backend == "groq" and not os.environ.get("GROQ_API_KEY"):
+        # Never serve a cached client for a token-less request: the token
+        # may have been unset since the cache entry was built (e.g. across
+        # tests), and a stale client would silently use a stale/no token.
+        raise RuntimeError(
+            "GAIA_LLM_BACKEND is set to 'groq' but the GROQ_API_KEY "
+            "environment variable is not set. Set GROQ_API_KEY to a Groq "
+            "API key to use the Groq backend."
         )
 
     if backend not in _clients:

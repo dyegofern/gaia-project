@@ -16,6 +16,10 @@ Unit 4 scoring API, using tool-calling with a choice of LLM backends.
     "Make calls to Inference Providers" permission). Note the free tier has a
     monthly credit cap; once exhausted, requests fail with a 402 error until
     the next billing cycle or until you add paid credits.
+  - **Groq** (cloud, genuinely free tier, fast) — set `GAIA_LLM_BACKEND=groq`
+    and `GROQ_API_KEY` (a Groq API key). The free tier for
+    `openai/gpt-oss-120b` allows 1000 requests/min and 8000 tokens/min, no
+    credit card or monthly credit cap involved.
 
 ## Choosing a backend
 
@@ -27,6 +31,12 @@ Unit 4 scoring API, using tool-calling with a choice of LLM backends.
 export HF_TOKEN=your_hf_token
 export GAIA_LLM_BACKEND=hf
 export GAIA_HF_MODEL=openai/gpt-oss-120b   # optional, this is the default
+/home/dyego/rocm10-test/bin/python run_eval.py --random
+
+# Groq
+export GROQ_API_KEY=your_groq_api_key
+export GAIA_LLM_BACKEND=groq
+export GAIA_GROQ_MODEL=openai/gpt-oss-120b   # optional, this is the default
 /home/dyego/rocm10-test/bin/python run_eval.py --random
 ```
 
@@ -57,9 +67,9 @@ export `HF_TOKEN` before running the full suite if you want it to pass too.
 
 ## Architecture
 
-- `gaia_agent/llm.py` — LLM client supporting two OpenAI-compatible backends
-  (local Lemonade Server, or Hugging Face Inference Providers), selected via
-  the `GAIA_LLM_BACKEND` env var (`"lemonade"` default or `"hf"`).
+- `gaia_agent/llm.py` — LLM client supporting three OpenAI-compatible backends
+  (local Lemonade Server, Hugging Face Inference Providers, or Groq), selected
+  via the `GAIA_LLM_BACKEND` env var (`"lemonade"` default, `"hf"`, or `"groq"`).
 - `gaia_agent/tools.py` — web_search, fetch_page, download_gaia_file, read_file, python_exec.
 - `gaia_agent/agent.py` — `GaiaAgent`, the tool-calling loop, matches the course's
   `BasicAgent.__call__(question) -> str` interface (plus an optional `task_id`).
