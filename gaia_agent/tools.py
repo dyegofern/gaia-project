@@ -1,9 +1,11 @@
 import os
 import re
 
+import pandas as pd
 import requests
 import trafilatura
 from ddgs import DDGS
+from pypdf import PdfReader
 
 
 def web_search(query: str) -> str:
@@ -100,6 +102,49 @@ DOWNLOAD_GAIA_FILE_SCHEMA = {
                 "task_id": {"type": "string", "description": "The GAIA task_id for the current question."}
             },
             "required": ["task_id"],
+        },
+    },
+}
+
+
+MAX_FILE_CHARS = 10000
+
+
+def read_file(path: str) -> str:
+    if not os.path.exists(path):
+        return f"ERROR: file not found: {path}"
+
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".pdf":
+            reader = PdfReader(path)
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        elif ext in (".xlsx", ".xls"):
+            df = pd.read_excel(path, sheet_name=None)
+            text = "\n\n".join(f"Sheet: {name}\n{sheet.to_string()}" for name, sheet in df.items())
+        elif ext == ".csv":
+            df = pd.read_csv(path)
+            text = df.to_string()
+        else:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+    except Exception as e:
+        return f"ERROR: could not read file {path}: {e}"
+
+    return text[:MAX_FILE_CHARS]
+
+
+READ_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": "Read a local file (text, code, .pdf, .csv, .xlsx) and return its extracted text content.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Local filesystem path to the file."}
+            },
+            "required": ["path"],
         },
     },
 }
