@@ -1,3 +1,6 @@
+import os
+import re
+
 import requests
 import trafilatura
 from ddgs import DDGS
@@ -58,6 +61,45 @@ FETCH_PAGE_SCHEMA = {
                 "url": {"type": "string", "description": "The URL to fetch."}
             },
             "required": ["url"],
+        },
+    },
+}
+
+
+SCORING_API_URL = "https://agents-course-unit4-scoring.hf.space"
+SCRATCH_DIR = os.path.join(os.path.dirname(__file__), "..", ".scratch")
+
+
+def download_gaia_file(task_id: str) -> str:
+    os.makedirs(SCRATCH_DIR, exist_ok=True)
+    url = f"{SCORING_API_URL}/files/{task_id}"
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+    except Exception as e:
+        return f"ERROR: could not download file for task {task_id}: {e}"
+
+    content_disp = resp.headers.get("content-disposition", "")
+    match = re.search(r'filename="?([^";]+)"?', content_disp)
+    filename = match.group(1) if match else task_id
+
+    path = os.path.join(SCRATCH_DIR, filename)
+    with open(path, "wb") as f:
+        f.write(resp.content)
+    return os.path.abspath(path)
+
+
+DOWNLOAD_GAIA_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "download_gaia_file",
+        "description": "Download the file attached to the current GAIA question (by task_id) and return its local file path.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "The GAIA task_id for the current question."}
+            },
+            "required": ["task_id"],
         },
     },
 }

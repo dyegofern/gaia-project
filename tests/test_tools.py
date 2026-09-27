@@ -15,3 +15,12 @@ def test_fetch_page_extracts_text():
     result = fetch_page("https://example.com")
     assert isinstance(result, str)
     assert "Example Domain" in result
+
+
+from gaia_agent.tools import download_gaia_file
+
+
+def test_download_gaia_file_handles_missing_file_gracefully():
+    result = download_gaia_file("nonexistent-task-id-12345")
+    assert isinstance(result, str)
+    assert result.startswith("ERROR")
