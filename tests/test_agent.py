@@ -59,6 +59,30 @@ def test_agent_never_returns_empty_string_when_max_iterations_exhausted():
     assert tools_arg is None
 
 
+def test_agent_never_injects_a_system_message_after_the_first():
+    # Some backends (e.g. Qwen3.5's chat template on Lemonade) reject any
+    # conversation where a "system" role message appears anywhere but first,
+    # raising a 500 "System message must be at the beginning" error. The
+    # turn-budget nudge must use role "user", not "system".
+    responses = [_make_tool_call_response() for _ in range(MAX_ITERATIONS)]
+    responses.append(_make_final_response("Paris"))
+
+    captured_messages = []
+
+    def fake_chat_completion(messages, tools=None, **kwargs):
+        captured_messages.append([dict(m) for m in messages])
+        return responses[len(captured_messages) - 1]
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=fake_chat_completion), \
+         patch("gaia_agent.agent.web_search", return_value="some search result snippet"):
+        agent = GaiaAgent()
+        agent("What is the capital of France?")
+
+    final_messages = captured_messages[-1]
+    system_message_indices = [i for i, m in enumerate(final_messages) if m["role"] == "system"]
+    assert system_message_indices == [0]
+
+
 def test_agent_answers_simple_question_without_tools():
     agent = GaiaAgent()
     answer = agent("What is 2 + 2? Reply with just the number.")

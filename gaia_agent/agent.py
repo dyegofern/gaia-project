@@ -60,7 +60,7 @@ class GaiaAgent:
         for i in range(MAX_ITERATIONS):
             if not nudged and i >= MAX_ITERATIONS - 2:
                 messages.append({
-                    "role": "system",
+                    "role": "user",
                     "content": (
                         "You are running low on tool calls. Synthesize a FINAL ANSWER "
                         "from the information you already have unless one more targeted "
