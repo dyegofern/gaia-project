@@ -9,8 +9,10 @@ Unit 4 scoring API, using tool-calling with a choice of LLM backends.
   dependencies installed via `pip install -r requirements.txt`.
 - One of the two LLM backends:
   - **Lemonade Server** (default, local, free, no usage limits) running on
-    port 13305 with `Qwen3.5-35B-A3B-GGUF` loaded
-    (`curl -s http://localhost:13305/api/v0/models` to check).
+    port 13305 with `Qwen3.5-35B-A3B-GGUF` loaded, and `Whisper-Large-v3-Turbo`
+    loaded for the `transcribe_audio` tool
+    (`curl -s http://localhost:13305/api/v0/models` to check; load with
+    `lemonade-server load Whisper-Large-v3-Turbo` if missing).
   - **Hugging Face Inference Providers** (cloud, free monthly credits, faster) —
     set `GAIA_LLM_BACKEND=hf` and `HF_TOKEN` (a Hugging Face access token with
     "Make calls to Inference Providers" permission). Note the free tier has a
@@ -70,7 +72,8 @@ export `HF_TOKEN` before running the full suite if you want it to pass too.
 - `gaia_agent/llm.py` — LLM client supporting three OpenAI-compatible backends
   (local Lemonade Server, Hugging Face Inference Providers, or Groq), selected
   via the `GAIA_LLM_BACKEND` env var (`"lemonade"` default, `"hf"`, or `"groq"`).
-- `gaia_agent/tools.py` — web_search, fetch_page, download_gaia_file, read_file, python_exec.
+- `gaia_agent/tools.py` — web_search, fetch_page, download_gaia_file, read_file,
+  python_exec, transcribe_audio (speech-to-text via Lemonade's local Whisper model).
 - `gaia_agent/agent.py` — `GaiaAgent`, the tool-calling loop, matches the course's
   `BasicAgent.__call__(question) -> str` interface (plus an optional `task_id`).
   Guarantees a non-empty best-effort answer even if the tool-calling budget
@@ -82,8 +85,9 @@ See `docs/superpowers/specs/2026-09-26-gaia-agent-design.md` for full design rat
 
 ## Known limitations
 
-- No image/audio/video understanding tools — GAIA questions requiring those
-  modalities will likely be answered incorrectly.
+- No image/video understanding tools (audio is now supported via
+  `transcribe_audio`) — GAIA questions requiring those modalities will likely
+  be answered incorrectly.
 - `python_exec` runs with no sandboxing beyond a subprocess timeout; fine for
   personal/trusted use, not suitable for untrusted input.
 - Hard, multi-hop research questions can still produce wrong (but non-empty)

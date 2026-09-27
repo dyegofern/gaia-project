@@ -57,3 +57,18 @@ def test_python_exec_captures_errors():
 def test_python_exec_times_out_long_running_code():
     result = python_exec("import time; time.sleep(60)")
     assert "TIMEOUT" in result
+
+
+from gaia_agent.tools import transcribe_audio
+
+
+def test_transcribe_audio_returns_text_for_real_speech():
+    result = transcribe_audio("/usr/share/sounds/speech-dispatcher/test.wav")
+    assert isinstance(result, str)
+    assert not result.startswith("ERROR")
+    assert len(result) > 0
+
+
+def test_transcribe_audio_missing_file_returns_error():
+    result = transcribe_audio("/nonexistent/path/audio.mp3")
+    assert result.startswith("ERROR")

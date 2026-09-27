@@ -152,6 +152,43 @@ READ_FILE_SCHEMA = {
 }
 
 
+LEMONADE_TRANSCRIPTION_URL = "http://localhost:13305/api/v0/audio/transcriptions"
+TRANSCRIPTION_MODEL = "Whisper-Large-v3-Turbo"
+
+
+def transcribe_audio(path: str) -> str:
+    if not os.path.exists(path):
+        return f"ERROR: file not found: {path}"
+    try:
+        with open(path, "rb") as f:
+            resp = requests.post(
+                LEMONADE_TRANSCRIPTION_URL,
+                files={"file": (os.path.basename(path), f)},
+                data={"model": TRANSCRIPTION_MODEL},
+                timeout=120,
+            )
+        resp.raise_for_status()
+    except Exception as e:
+        return f"ERROR: could not transcribe {path}: {e}"
+    return resp.json().get("text", "").strip() or "(no speech detected)"
+
+
+TRANSCRIBE_AUDIO_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "transcribe_audio",
+        "description": "Transcribe a local audio file (e.g. .mp3, .wav) to text using speech-to-text.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Local filesystem path to the audio file."}
+            },
+            "required": ["path"],
+        },
+    },
+}
+
+
 ROCM10_PYTHON = "/home/dyego/rocm10-test/bin/python"
 PYTHON_EXEC_TIMEOUT = 30
 

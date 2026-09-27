@@ -10,13 +10,16 @@ from gaia_agent.tools import (
     download_gaia_file, DOWNLOAD_GAIA_FILE_SCHEMA,
     read_file, READ_FILE_SCHEMA,
     python_exec, PYTHON_EXEC_SCHEMA,
+    transcribe_audio, TRANSCRIBE_AUDIO_SCHEMA,
 )
 
 SYSTEM_PROMPT = """You are a general-purpose research assistant answering benchmark questions.
 
-You have access to tools: web_search, fetch_page, download_gaia_file, read_file, python_exec.
+You have access to tools: web_search, fetch_page, download_gaia_file, read_file,
+python_exec, transcribe_audio.
 Use them as needed to research and compute the answer. If the question references an
-attached file and a task_id is provided, call download_gaia_file first, then read_file.
+attached file and a task_id is provided, call download_gaia_file first, then read_file
+(or transcribe_audio for .mp3/.wav files).
 
 When you know the final answer, respond with a line in exactly this format and nothing else:
 FINAL ANSWER: <answer>
@@ -30,6 +33,7 @@ TOOLS = [
     DOWNLOAD_GAIA_FILE_SCHEMA,
     READ_FILE_SCHEMA,
     PYTHON_EXEC_SCHEMA,
+    TRANSCRIBE_AUDIO_SCHEMA,
 ]
 
 TOOL_FUNCTIONS = {
@@ -38,6 +42,7 @@ TOOL_FUNCTIONS = {
     "download_gaia_file": download_gaia_file,
     "read_file": read_file,
     "python_exec": python_exec,
+    "transcribe_audio": transcribe_audio,
 }
 
 MAX_ITERATIONS = 10
