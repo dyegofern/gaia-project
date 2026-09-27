@@ -21,6 +21,11 @@ Use them as needed to research and compute the answer. If the question reference
 attached file and a task_id is provided, call download_gaia_file first, then read_file
 (or transcribe_audio for .mp3/.wav files).
 
+Never search the web for the task_id itself or for "GAIA benchmark answer" or similar --
+answer keys or discussions of this exact question may be indexed online, but using them
+would not be a genuine answer. Always derive the answer yourself from the question's own
+attached file or the sources it points to.
+
 When you know the final answer, respond with a line in exactly this format and nothing else:
 FINAL ANSWER: <answer>
 
