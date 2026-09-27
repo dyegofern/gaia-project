@@ -1,6 +1,7 @@
 # gaia_agent/llm.py
 import os
 import socket
+import time
 
 from openai import OpenAI
 
@@ -51,6 +52,9 @@ HF_MODEL = os.environ.get("GAIA_HF_MODEL", "openai/gpt-oss-120b")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = os.environ.get("GAIA_GROQ_MODEL", "openai/gpt-oss-120b")
 
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_MODEL = os.environ.get("GAIA_GEMINI_MODEL", "gemini-2.5-flash")
+
 _clients = {}
 
 
@@ -62,6 +66,10 @@ def _build_backend(backend):
     if backend == "groq":
         client = OpenAI(base_url=GROQ_BASE_URL, api_key=os.environ["GROQ_API_KEY"])
         return client, GROQ_MODEL
+
+    if backend == "gemini":
+        client = OpenAI(base_url=GEMINI_BASE_URL, api_key=os.environ["GEMINI_API_KEY"])
+        return client, GEMINI_MODEL
 
     client = OpenAI(base_url=LEMONADE_BASE_URL, api_key="not-needed")
     return client, LEMONADE_MODEL
@@ -90,9 +98,64 @@ def _get_client_and_model():
             "API key to use the Groq backend."
         )
 
+    if backend == "gemini" and not os.environ.get("GEMINI_API_KEY"):
+        # Never serve a cached client for a token-less request: the token
+        # may have been unset since the cache entry was built (e.g. across
+        # tests), and a stale client would silently use a stale/no token.
+        raise RuntimeError(
+            "GAIA_LLM_BACKEND is set to 'gemini' but the GEMINI_API_KEY "
+            "environment variable is not set. Set GEMINI_API_KEY to a Gemini "
+            "API key to use the Gemini backend."
+        )
+
     if backend not in _clients:
         _clients[backend] = _build_backend(backend)
     return _clients[backend]
+
+
+def _parse_reset_seconds(value):
+    # Groq/OpenAI-style headers give durations like "12.5s" or "1m30s".
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if value.endswith("s") and "m" not in value:
+        try:
+            return float(value[:-1])
+        except ValueError:
+            return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _maybe_wait_for_rate_limit(response, low_watermark=1000):
+    """Proactively pace requests when a token-based rate limit is close to
+    exhausted, using the server's own reported remaining/reset values
+    (Groq-style headers) rather than guessing -- avoids repeatedly hitting
+    429s and burning the OpenAI SDK's blind exponential-backoff retries.
+    Backends without these headers (e.g. Lemonade) are unaffected.
+    """
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return
+
+    remaining = headers.get("x-ratelimit-remaining-tokens")
+    reset = headers.get("x-ratelimit-reset-tokens")
+    if remaining is None or reset is None:
+        return
+
+    try:
+        remaining = float(remaining)
+    except ValueError:
+        return
+
+    if remaining >= low_watermark:
+        return
+
+    wait_seconds = _parse_reset_seconds(reset)
+    if wait_seconds is not None and wait_seconds > 0:
+        time.sleep(wait_seconds)
 
 
 def chat_completion(messages, tools=None, timeout=120):
@@ -100,4 +163,6 @@ def chat_completion(messages, tools=None, timeout=120):
     kwargs = {"model": model, "messages": messages, "timeout": timeout}
     if tools:
         kwargs["tools"] = tools
-    return client.chat.completions.create(**kwargs)
+    raw_response = client.chat.completions.with_raw_response.create(**kwargs)
+    _maybe_wait_for_rate_limit(raw_response)
+    return raw_response.parse()
