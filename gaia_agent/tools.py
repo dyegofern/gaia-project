@@ -40,7 +40,7 @@ WEB_SEARCH_SCHEMA = {
 }
 
 
-MAX_PAGE_CHARS = 8000
+MAX_PAGE_CHARS = 30000
 
 
 def fetch_page(url: str) -> str:
