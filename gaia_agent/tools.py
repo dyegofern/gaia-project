@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import subprocess
@@ -7,6 +8,7 @@ import tempfile
 import pandas as pd
 import requests
 import trafilatura
+import yt_dlp
 from ddgs import DDGS
 from pypdf import PdfReader
 
@@ -185,6 +187,159 @@ TRANSCRIBE_AUDIO_SCHEMA = {
                 "path": {"type": "string", "description": "Local filesystem path to the audio file."}
             },
             "required": ["path"],
+        },
+    },
+}
+
+
+YOUTUBE_MAX_FRAMES = 6
+_YOUTUBE_DOWNLOAD_CACHE = {}
+
+
+def _download_youtube_video(url: str) -> str:
+    """Download a YouTube video once per URL within this process and cache
+    the local path -- both YouTube tools below need the video file, and
+    downloading is the slowest, most failure-prone step, so it should only
+    happen once even if the agent calls both tools for the same video.
+    """
+    if url in _YOUTUBE_DOWNLOAD_CACHE:
+        return _YOUTUBE_DOWNLOAD_CACHE[url]
+
+    tmpdir = tempfile.mkdtemp()
+    with yt_dlp.YoutubeDL({
+        "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
+        "quiet": True,
+        "noprogress": True,
+    }) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+    video_files = [f for f in os.listdir(tmpdir) if f.startswith("video.")]
+    if not video_files:
+        raise RuntimeError(f"download reported success but no video file was found for {url}")
+    video_path = os.path.join(tmpdir, video_files[0])
+    _YOUTUBE_DOWNLOAD_CACHE[url] = (video_path, info)
+    return _YOUTUBE_DOWNLOAD_CACHE[url]
+
+
+def transcribe_youtube_video(url: str) -> str:
+    try:
+        video_path, info = _download_youtube_video(url)
+    except Exception as e:
+        return f"ERROR: could not download video {url}: {e}"
+
+    audio_path = video_path + ".audio.mp3"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-i", video_path, "-vn", "-acodec", "libmp3lame",
+             "-ar", "16000", "-ac", "1", audio_path, "-y"],
+            capture_output=True, timeout=60, check=True,
+        )
+    except Exception as e:
+        return f"ERROR: could not extract audio from {url}: {e}"
+
+    return transcribe_audio(audio_path)
+
+
+TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "transcribe_youtube_video",
+        "description": (
+            "Download a YouTube video and transcribe its spoken audio to "
+            "text. Use for questions about dialogue or narration in a video "
+            "(what someone says). Faster than analyze_youtube_frames -- "
+            "prefer this first if the question is about speech/dialogue."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The YouTube video URL."}
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+
+def _describe_frame(image_path: str) -> str:
+    from gaia_agent.llm import chat_completion
+
+    with open(image_path, "rb") as f:
+        img_b64 = base64.b64encode(f.read()).decode()
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Describe everything visible in this video frame in detail: "
+                        "people, animals, objects, text, actions, counts of things "
+                        "if relevant. Be factual and specific."
+                    ),
+                },
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+            ],
+        }
+    ]
+    response = chat_completion(messages)
+    return response.choices[0].message.content or ""
+
+
+def analyze_youtube_frames(url: str) -> str:
+    """Describe several frames sampled evenly across the video using a
+    vision-capable model -- slow (one model call per frame) since it's only
+    needed for questions about what is visually shown, not said.
+    """
+    try:
+        video_path, info = _download_youtube_video(url)
+    except Exception as e:
+        return f"ERROR: could not download video {url}: {e}"
+
+    duration = info.get("duration") or 0
+    frames_dir = video_path + ".frames"
+    os.makedirs(frames_dir, exist_ok=True)
+    try:
+        fps = max(YOUTUBE_MAX_FRAMES / duration, 0.05) if duration else 0.2
+        subprocess.run(
+            ["ffmpeg", "-i", video_path, "-vf", f"fps={fps}",
+             os.path.join(frames_dir, "frame_%03d.jpg"), "-y"],
+            capture_output=True, timeout=60, check=True,
+        )
+    except Exception as e:
+        return f"ERROR: could not extract frames from {url}: {e}"
+
+    frame_files = sorted(os.listdir(frames_dir))[:YOUTUBE_MAX_FRAMES]
+    if not frame_files:
+        return f"ERROR: no frames could be extracted from {url}"
+
+    descriptions = []
+    for i, fname in enumerate(frame_files):
+        try:
+            desc = _describe_frame(os.path.join(frames_dir, fname))
+            descriptions.append(f"Frame {i + 1} (of {len(frame_files)}, sampled across the video): {desc}")
+        except Exception as e:
+            descriptions.append(f"Frame {i + 1}: ERROR describing frame: {e}")
+    return "\n\n".join(descriptions)
+
+
+ANALYZE_YOUTUBE_FRAMES_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "analyze_youtube_frames",
+        "description": (
+            "Download a YouTube video and describe several frames sampled "
+            "across it using a vision model. Use for questions about what "
+            "is visually shown (objects, people, counts, on-screen text). "
+            "Slower than transcribe_youtube_video -- only use this when the "
+            "question is about visual content, not dialogue."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The YouTube video URL."}
+            },
+            "required": ["url"],
         },
     },
 }

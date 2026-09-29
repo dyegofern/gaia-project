@@ -7,6 +7,8 @@ Unit 4 scoring API, using tool-calling with a choice of LLM backends.
 
 - Python environment: `/home/dyego/rocm10-test` (ROCm-enabled venv), with
   dependencies installed via `pip install -r requirements.txt`.
+- `ffmpeg` available on `PATH` (used by `transcribe_youtube_video`/`analyze_youtube_frames`
+  to extract audio and frames from downloaded videos).
 - One of the two LLM backends:
   - **Lemonade Server** (default, local, free, no usage limits) running on
     port 13305 with `Qwen3.5-35B-A3B-GGUF` loaded, and `Whisper-Large-v3-Turbo`
@@ -73,7 +75,9 @@ export `HF_TOKEN` before running the full suite if you want it to pass too.
   (local Lemonade Server, Hugging Face Inference Providers, or Groq), selected
   via the `GAIA_LLM_BACKEND` env var (`"lemonade"` default, `"hf"`, or `"groq"`).
 - `gaia_agent/tools.py` — web_search, fetch_page, download_gaia_file, read_file,
-  python_exec, transcribe_audio (speech-to-text via Lemonade's local Whisper model).
+  python_exec, transcribe_audio (speech-to-text via Lemonade's local Whisper model),
+  transcribe_youtube_video and analyze_youtube_frames (yt-dlp + ffmpeg to download and
+  extract audio/frames, transcribed via Whisper or described via Lemonade's vision model).
 - `gaia_agent/agent.py` — `GaiaAgent`, the tool-calling loop, matches the course's
   `BasicAgent.__call__(question) -> str` interface (plus an optional `task_id`).
   Guarantees a non-empty best-effort answer even if the tool-calling budget
@@ -85,9 +89,9 @@ See `docs/superpowers/specs/2026-09-26-gaia-agent-design.md` for full design rat
 
 ## Known limitations
 
-- No image/video understanding tools (audio is now supported via
-  `transcribe_audio`) — GAIA questions requiring those modalities will likely
-  be answered incorrectly.
+- YouTube video analysis samples only a handful of frames (`YOUTUBE_MAX_FRAMES`,
+  default 6) evenly across the video, so questions needing a specific fleeting
+  moment (e.g. the exact peak count of something on screen) may be missed.
 - `python_exec` runs with no sandboxing beyond a subprocess timeout; fine for
   personal/trusted use, not suitable for untrusted input.
 - Hard, multi-hop research questions can still produce wrong (but non-empty)

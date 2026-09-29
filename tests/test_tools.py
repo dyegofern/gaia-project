@@ -72,3 +72,27 @@ def test_transcribe_audio_returns_text_for_real_speech():
 def test_transcribe_audio_missing_file_returns_error():
     result = transcribe_audio("/nonexistent/path/audio.mp3")
     assert result.startswith("ERROR")
+
+
+from gaia_agent.tools import transcribe_youtube_video, analyze_youtube_frames
+
+
+def test_transcribe_youtube_video_returns_dialogue_text():
+    # Real network test against a short, stable public video -- matches the
+    # pattern of other tests in this file that hit real services rather
+    # than mocking, since the whole point is verifying the real pipeline
+    # (yt-dlp download + ffmpeg audio extraction + Whisper) works together.
+    result = transcribe_youtube_video("https://www.youtube.com/watch?v=1htKBjuUWec")
+    assert isinstance(result, str)
+    assert not result.startswith("ERROR")
+    assert "extremely" in result.lower()
+
+
+def test_transcribe_youtube_video_invalid_url_returns_error():
+    result = transcribe_youtube_video("https://www.youtube.com/watch?v=nonexistent_xyz123")
+    assert result.startswith("ERROR")
+
+
+def test_analyze_youtube_frames_invalid_url_returns_error():
+    result = analyze_youtube_frames("https://www.youtube.com/watch?v=nonexistent_xyz123")
+    assert result.startswith("ERROR")
