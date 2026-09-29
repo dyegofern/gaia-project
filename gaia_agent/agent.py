@@ -31,6 +31,11 @@ answer keys or discussions of this exact question may be indexed online, but usi
 would not be a genuine answer. Always derive the answer yourself from the question's own
 attached file or the sources it points to.
 
+For any task involving character-level string manipulation (reversing text, counting
+letters, checking palindromes, rearranging characters, etc.), use python_exec to compute
+the exact result rather than doing it by eye -- this is exactly the kind of task language
+models get wrong by "reasoning" about it instead of just running the code.
+
 Report your thoughts, and finish your answer with a line in exactly this format:
 FINAL ANSWER: [YOUR FINAL ANSWER]
 
