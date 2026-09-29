@@ -1,9 +1,22 @@
 # tests/test_agent.py
 from unittest.mock import patch, MagicMock
 
-from openai import BadRequestError
+from openai import BadRequestError, RateLimitError
 
 from gaia_agent.agent import GaiaAgent, MAX_ITERATIONS
+
+
+def _make_fake_rate_limit_error():
+    fake_response = MagicMock()
+    fake_response.request = MagicMock()
+    fake_response.status_code = 429
+    return RateLimitError(
+        "Rate limit reached for model `openai/gpt-oss-120b` on tokens per day "
+        "(TPD): Limit 200000, Used 199711, Requested 1534. Please try again "
+        "in 8m58.272s.",
+        response=fake_response,
+        body=None,
+    )
 
 
 def _make_fake_api_error():
@@ -187,6 +200,23 @@ def test_agent_returns_error_string_if_final_answer_call_also_fails():
 
     assert isinstance(answer, str)
     assert "error" in answer.lower()
+
+
+def test_agent_surfaces_rate_limit_details_instead_of_generic_error():
+    # A RateLimitError (e.g. Groq's daily token quota) carries a specific,
+    # actionable message from the server -- the agent should surface it
+    # rather than hiding it behind the generic "repeated API errors"
+    # string, so it's clear this isn't the same kind of failure as a
+    # malformed tool call and no amount of retrying right now will help.
+    def always_rate_limited(*args, **kwargs):
+        raise _make_fake_rate_limit_error()
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=always_rate_limited):
+        agent = GaiaAgent()
+        answer = agent("What is the capital of France?")
+
+    assert "rate limit" in answer.lower()
+    assert "tokens per day" in answer.lower() or "tpd" in answer.lower()
 
 
 def test_agent_answers_simple_question_without_tools():

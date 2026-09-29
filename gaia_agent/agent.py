@@ -1,7 +1,7 @@
 import json
 import re
 
-from openai import APIError
+from openai import APIError, RateLimitError
 
 from gaia_agent.llm import chat_completion
 from gaia_agent.tools import (
@@ -70,6 +70,18 @@ TOOL_FUNCTIONS = {
 }
 
 MAX_ITERATIONS = 10
+
+
+def _format_api_error(e: APIError) -> str:
+    # RateLimitError (e.g. Groq's daily token quota, distinct from the
+    # per-minute limit chat_completion already paces around) carries a
+    # specific, actionable message from the server -- surface it instead
+    # of a generic "repeated API errors" string that hides what actually
+    # went wrong and whether retrying now would even help.
+    if isinstance(e, RateLimitError):
+        return f"AGENT ERROR: rate limited ({e})"
+    return "AGENT ERROR: could not produce a final answer after repeated API errors"
+
 
 # Some models (e.g. Qwen3.5 on Lemonade) sometimes write tool calls as
 # informal XML-like text directly into the message `content` instead of
@@ -201,8 +213,8 @@ class GaiaAgent:
             try:
                 response = chat_completion(messages, tools=None)
                 last_content = response.choices[0].message.content or ""
-            except APIError:
-                return "AGENT ERROR: could not produce a final answer after repeated API errors"
+            except APIError as e:
+                return _format_api_error(e)
 
             # Even with tools=None, some models persistently write an
             # informal tool-call pattern into content out of habit. No more
@@ -222,8 +234,8 @@ class GaiaAgent:
                 try:
                     response = chat_completion(messages, tools=None)
                     last_content = response.choices[0].message.content or ""
-                except APIError:
-                    return "AGENT ERROR: could not produce a final answer after repeated API errors"
+                except APIError as e:
+                    return _format_api_error(e)
 
         return self._extract_final_answer(last_content)
 
