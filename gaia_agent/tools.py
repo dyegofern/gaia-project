@@ -1,4 +1,5 @@
 import base64
+import io
 import os
 import re
 import subprocess
@@ -287,29 +288,81 @@ TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA = {
 }
 
 
+DEFAULT_IMAGE_ANALYSIS_PROMPT = (
+    "Describe everything visible in this image in detail: people, animals, "
+    "objects, text, actions, counts of things if relevant. Be factual and "
+    "specific."
+)
+
+# Full-resolution images (e.g. a 3480x2160 wallpaper) were observed to time
+# out the vision model entirely; downscaling to a reasonable max dimension
+# keeps inference fast and reliable without losing content a vision model
+# needs (verified live: a 341x512 image analyzed quickly and accurately).
+IMAGE_ANALYSIS_MAX_DIMENSION = 1024
+
+
 def _describe_frame(image_path: str) -> str:
+    return analyze_image(image_path)
+
+
+def analyze_image(path: str, question: str = "") -> str:
+    from PIL import Image
     from gaia_agent.llm import chat_completion
 
-    with open(image_path, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode()
+    if not os.path.exists(path):
+        return f"ERROR: file not found: {path}"
+
+    prompt = question.strip() or DEFAULT_IMAGE_ANALYSIS_PROMPT
+    try:
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((IMAGE_ANALYSIS_MAX_DIMENSION, IMAGE_ANALYSIS_MAX_DIMENSION))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            img_b64 = base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        return f"ERROR: could not read image {path}: {e}"
+
     messages = [
         {
             "role": "user",
             "content": [
-                {
-                    "type": "text",
-                    "text": (
-                        "Describe everything visible in this video frame in detail: "
-                        "people, animals, objects, text, actions, counts of things "
-                        "if relevant. Be factual and specific."
-                    ),
-                },
+                {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
             ],
         }
     ]
-    response = chat_completion(messages)
+    try:
+        response = chat_completion(messages)
+    except Exception as e:
+        return f"ERROR: could not analyze image {path}: {e}"
     return response.choices[0].message.content or ""
+
+
+ANALYZE_IMAGE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "analyze_image",
+        "description": (
+            "Describe or answer a question about a local image file using a "
+            "vision-capable model. Use this for any image file (e.g. a "
+            "downloaded chess position, diagram, photo, or screenshot) -- "
+            "for a chess position, ask it to describe the exact position of "
+            "every piece on the board."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Local filesystem path to the image file."},
+                "question": {
+                    "type": "string",
+                    "description": "Optional specific question to ask about the image; if omitted, gives a general description.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 
 def analyze_youtube_frames(url: str) -> str:

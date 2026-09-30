@@ -77,7 +77,9 @@ export `HF_TOKEN` before running the full suite if you want it to pass too.
 - `gaia_agent/tools.py` — web_search, fetch_page, download_gaia_file, read_file,
   python_exec, transcribe_audio (speech-to-text via Lemonade's local Whisper model),
   transcribe_youtube_video and analyze_youtube_frames (yt-dlp + ffmpeg to download and
-  extract audio/frames, transcribed via Whisper or described via Lemonade's vision model).
+  extract audio/frames, transcribed via Whisper or described via Lemonade's vision model),
+  analyze_image (describes/answers questions about any local image file via Lemonade's
+  vision model; auto-downscales large images to avoid vision-model timeouts).
 - `gaia_agent/agent.py` — `GaiaAgent`, the tool-calling loop, matches the course's
   `BasicAgent.__call__(question) -> str` interface (plus an optional `task_id`).
   Guarantees a non-empty best-effort answer even if the tool-calling budget

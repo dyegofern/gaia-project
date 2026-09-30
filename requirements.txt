@@ -7,3 +7,4 @@ pypdf>=4.0
 openpyxl>=3.0
 pandas>=2.0
 yt-dlp>=2026.1.1
+Pillow>=10.0

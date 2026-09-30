@@ -125,3 +125,42 @@ def test_transcribe_youtube_video_invalid_url_returns_error():
 def test_analyze_youtube_frames_invalid_url_returns_error():
     result = analyze_youtube_frames("https://www.youtube.com/watch?v=nonexistent_xyz123")
     assert result.startswith("ERROR")
+
+
+from unittest.mock import patch, MagicMock
+
+from PIL import Image
+
+from gaia_agent.tools import analyze_image, IMAGE_ANALYSIS_MAX_DIMENSION
+
+
+def test_analyze_image_missing_file_returns_error():
+    result = analyze_image("/nonexistent/path/image.png")
+    assert result.startswith("ERROR")
+
+
+def test_analyze_image_downscales_large_images_before_sending(tmp_path):
+    # A full-resolution image (observed live: 3480x2160) was slow enough to
+    # time out the vision model entirely; analyze_image must downscale
+    # before encoding so large downloaded images (e.g. a GAIA chess
+    # position screenshot) don't silently fail this way.
+    large_image_path = tmp_path / "large.png"
+    Image.new("RGB", (3000, 2000), color="red").save(large_image_path)
+
+    captured_messages = []
+
+    def fake_chat_completion(messages, **kwargs):
+        captured_messages.append(messages)
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="a red image"))]
+        return response
+
+    with patch("gaia_agent.llm.chat_completion", side_effect=fake_chat_completion):
+        result = analyze_image(str(large_image_path))
+
+    assert result == "a red image"
+    image_url = captured_messages[0][0]["content"][1]["image_url"]["url"]
+    b64_data = image_url.split(",", 1)[1]
+    import base64, io
+    decoded = Image.open(io.BytesIO(base64.b64decode(b64_data)))
+    assert max(decoded.size) <= IMAGE_ANALYSIS_MAX_DIMENSION

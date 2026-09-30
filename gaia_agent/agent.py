@@ -13,18 +13,24 @@ from gaia_agent.tools import (
     transcribe_audio, TRANSCRIBE_AUDIO_SCHEMA,
     transcribe_youtube_video, TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA,
     analyze_youtube_frames, ANALYZE_YOUTUBE_FRAMES_SCHEMA,
+    analyze_image, ANALYZE_IMAGE_SCHEMA,
 )
 
 SYSTEM_PROMPT = """You are a general-purpose research assistant answering benchmark questions.
 
 You have access to tools: web_search, fetch_page, download_gaia_file, read_file,
-python_exec, transcribe_audio, transcribe_youtube_video, analyze_youtube_frames.
+python_exec, transcribe_audio, transcribe_youtube_video, analyze_youtube_frames,
+analyze_image.
 Use them as needed to research and compute the answer. If the question references an
 attached file and a task_id is provided, call download_gaia_file first, then read_file
-(or transcribe_audio for .mp3/.wav files). If the question references a YouTube video,
-use transcribe_youtube_video for questions about dialogue/speech, or
-analyze_youtube_frames for questions about visual content (objects, people, counts) --
-only use analyze_youtube_frames if actually needed, since it is much slower.
+for text/PDF/CSV/XLSX, transcribe_audio for .mp3/.wav files, or analyze_image for any
+image file (e.g. .png/.jpg) -- for a chess position image, ask analyze_image to describe
+the exact position of every piece on the board (rank, file, and piece type) so you can
+work out the position yourself, since guessing the position by general description alone
+is unreliable. If the question references a YouTube video, use transcribe_youtube_video
+for questions about dialogue/speech, or analyze_youtube_frames for questions about visual
+content (objects, people, counts) -- only use analyze_youtube_frames if actually needed,
+since it is much slower.
 
 Never search the web for the task_id itself or for "GAIA benchmark answer" or similar --
 answer keys or discussions of this exact question may be indexed online, but using them
@@ -56,6 +62,7 @@ TOOLS = [
     TRANSCRIBE_AUDIO_SCHEMA,
     TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA,
     ANALYZE_YOUTUBE_FRAMES_SCHEMA,
+    ANALYZE_IMAGE_SCHEMA,
 ]
 
 TOOL_FUNCTIONS = {
@@ -67,6 +74,7 @@ TOOL_FUNCTIONS = {
     "transcribe_audio": transcribe_audio,
     "transcribe_youtube_video": transcribe_youtube_video,
     "analyze_youtube_frames": analyze_youtube_frames,
+    "analyze_image": analyze_image,
 }
 
 MAX_ITERATIONS = 10
