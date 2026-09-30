@@ -164,3 +164,27 @@ def test_analyze_image_downscales_large_images_before_sending(tmp_path):
     import base64, io
     decoded = Image.open(io.BytesIO(base64.b64decode(b64_data)))
     assert max(decoded.size) <= IMAGE_ANALYSIS_MAX_DIMENSION
+
+
+from gaia_agent.tools import read_chess_board_image, best_chess_moves
+
+CHESS_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "chess_position.png")
+CHESS_FIXTURE_FEN = "3r2k1/pp3pp1/4b2p/7Q/3n4/PqBBR2P/5PP1/6K1 b - - 0 1"
+
+
+def test_read_chess_board_image_reads_flipped_board_into_fen():
+    result = read_chess_board_image(CHESS_FIXTURE, side_to_move="b")
+    assert f"FEN: {CHESS_FIXTURE_FEN}" in result
+
+
+def test_read_chess_board_image_missing_file_returns_error():
+    assert read_chess_board_image("/nonexistent/board.png").startswith("ERROR")
+
+
+def test_best_chess_moves_finds_winning_rook_move():
+    result = best_chess_moves(CHESS_FIXTURE_FEN)
+    assert result.splitlines()[1].startswith("Rd5")
+
+
+def test_best_chess_moves_invalid_fen_returns_error():
+    assert best_chess_moves("not a fen").startswith("ERROR")

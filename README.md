@@ -80,6 +80,9 @@ export `HF_TOKEN` before running the full suite if you want it to pass too.
   extract audio/frames, transcribed via Whisper or described via Lemonade's vision model),
   analyze_image (describes/answers questions about any local image file via Lemonade's
   vision model; auto-downscales large images to avoid vision-model timeouts).
+- `gaia_agent/chess_vision.py` + `read_chess_board_image` / `best_chess_moves` tools — deterministic
+  board-screenshot-to-FEN reader (template matching, auto-detects flipped boards) and Stockfish
+  analysis (needs `stockfish`, default path `/usr/games/stockfish`, override with `GAIA_STOCKFISH_PATH`).
 - `gaia_agent/agent.py` — `GaiaAgent`, the tool-calling loop, matches the course's
   `BasicAgent.__call__(question) -> str` interface (plus an optional `task_id`).
   Guarantees a non-empty best-effort answer even if the tool-calling budget

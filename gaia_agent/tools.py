@@ -232,6 +232,9 @@ def _download_youtube_video(url: str) -> str:
         "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
         "quiet": True,
         "noprogress": True,
+        # Frames get downscaled for the vision model and audio is all
+        # Whisper needs, so full-resolution video is wasted download time.
+        "format": "bv*[height<=480]+ba/b[height<=480]/b",
         # Without an explicit JS runtime, yt-dlp only enables deno by
         # default (not installed here) and falls back to a degraded
         # extraction path with a loud warning. node is already present on
@@ -333,7 +336,10 @@ def analyze_image(path: str, question: str = "") -> str:
         }
     ]
     try:
-        response = chat_completion(messages)
+        # Vision inference on this local model has been observed to take
+        # 60-90s+ even for moderate prompts; the default 120s timeout isn't
+        # enough headroom for more detailed/structured analysis requests.
+        response = chat_completion(messages, timeout=240)
     except Exception as e:
         return f"ERROR: could not analyze image {path}: {e}"
     return response.choices[0].message.content or ""
@@ -465,6 +471,100 @@ PYTHON_EXEC_SCHEMA = {
                 "code": {"type": "string", "description": "The Python source code to execute."}
             },
             "required": ["code"],
+        },
+    },
+}
+
+
+STOCKFISH_PATH = os.environ.get("GAIA_STOCKFISH_PATH", "/usr/games/stockfish")
+CHESS_ANALYSIS_DEPTH = 20
+CHESS_ANALYSIS_LINES = 5
+
+
+def best_chess_moves(fen: str) -> str:
+    import chess
+    import chess.engine
+
+    try:
+        board = chess.Board(fen)
+    except ValueError as e:
+        return f"ERROR: invalid FEN {fen!r}: {e}"
+    if not board.is_valid():
+        return f"ERROR: FEN {fen!r} describes an illegal position: {board.status()!r}"
+    if board.is_game_over():
+        return f"ERROR: game is already over ({board.result()})"
+
+    side = "White" if board.turn == chess.WHITE else "Black"
+    try:
+        engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    except (FileNotFoundError, PermissionError) as e:
+        return f"ERROR: could not start Stockfish at {STOCKFISH_PATH}: {e}"
+    try:
+        infos = engine.analyse(
+            board,
+            chess.engine.Limit(depth=CHESS_ANALYSIS_DEPTH),
+            multipv=CHESS_ANALYSIS_LINES,
+        )
+    finally:
+        engine.quit()
+
+    lines = [f"{side} to move. Top moves (Stockfish depth {CHESS_ANALYSIS_DEPTH}):"]
+    for info in infos:
+        score = info["score"].pov(board.turn)
+        if score.is_mate():
+            evaluation = f"forced mate in {abs(score.mate())}" if score.mate() > 0 else f"gets mated in {abs(score.mate())}"
+        else:
+            evaluation = f"{score.score() / 100:+.2f} pawns"
+        lines.append(f"{board.san(info['pv'][0])}: {evaluation}")
+    return "\n".join(lines)
+
+
+BEST_CHESS_MOVES_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "best_chess_moves",
+        "description": "Analyze a chess position with the Stockfish engine and return the best candidate moves in standard algebraic notation with evaluations. Requires a FEN string; the side to move is taken from the FEN.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fen": {"type": "string", "description": "The position in FEN notation, e.g. '3r2k1/pp3pp1/4b2p/7Q/3n4/PqBBR2P/5PP1/6K1 b - - 0 1'."}
+            },
+            "required": ["fen"],
+        },
+    },
+}
+
+
+def read_chess_board_image(path: str, flipped=None, side_to_move: str = "w") -> str:
+    import chess
+
+    from gaia_agent.chess_vision import board_image_to_placement
+
+    if not os.path.exists(path):
+        return f"ERROR: file not found: {path}"
+    if side_to_move not in ("w", "b"):
+        return "ERROR: side_to_move must be 'w' or 'b'"
+    try:
+        placement = board_image_to_placement(path, flipped=flipped)
+    except Exception as e:
+        return f"ERROR: could not read chess board from {path}: {e}"
+    fen = f"{placement} {side_to_move} - - 0 1"
+    return f"FEN: {fen}\n{chess.Board(fen)}"
+
+
+READ_CHESS_BOARD_IMAGE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "read_chess_board_image",
+        "description": "Deterministically read a chess board screenshot (8x8 grid image) into a FEN string plus an ASCII diagram. Much more reliable than asking analyze_image to list pieces. The result FEN can be passed to best_chess_moves. Orientation is auto-detected; only pass flipped if the coordinate labels clearly show the opposite (rank 1 at the top / file h at the left means flipped=true).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Local path to the board image."},
+                "flipped": {"type": "boolean", "description": "Optional override: true if the board is displayed rotated 180 degrees (a8 NOT at top-left). Omit to auto-detect."},
+                "side_to_move": {"type": "string", "enum": ["w", "b"], "description": "Whose turn it is, from the question text. Default 'w'."},
+            },
+            "required": ["path"],
         },
     },
 }

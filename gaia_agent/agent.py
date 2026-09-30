@@ -14,20 +14,22 @@ from gaia_agent.tools import (
     transcribe_youtube_video, TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA,
     analyze_youtube_frames, ANALYZE_YOUTUBE_FRAMES_SCHEMA,
     analyze_image, ANALYZE_IMAGE_SCHEMA,
+    read_chess_board_image, READ_CHESS_BOARD_IMAGE_SCHEMA,
+    best_chess_moves, BEST_CHESS_MOVES_SCHEMA,
 )
 
 SYSTEM_PROMPT = """You are a general-purpose research assistant answering benchmark questions.
 
 You have access to tools: web_search, fetch_page, download_gaia_file, read_file,
 python_exec, transcribe_audio, transcribe_youtube_video, analyze_youtube_frames,
-analyze_image.
+analyze_image, read_chess_board_image, best_chess_moves.
 Use them as needed to research and compute the answer. If the question references an
 attached file and a task_id is provided, call download_gaia_file first, then read_file
 for text/PDF/CSV/XLSX, transcribe_audio for .mp3/.wav files, or analyze_image for any
-image file (e.g. .png/.jpg) -- for a chess position image, ask analyze_image to describe
-the exact position of every piece on the board (rank, file, and piece type) so you can
-work out the position yourself, since guessing the position by general description alone
-is unreliable. If the question references a YouTube video, use transcribe_youtube_video
+image file (e.g. .png/.jpg). For a chess position image, do NOT ask analyze_image to list
+pieces (unreliable): call read_chess_board_image (orientation is auto-detected;
+side_to_move from the question), then call best_chess_moves with the resulting FEN and answer with the move in the notation the
+question asks for. If the question references a YouTube video, use transcribe_youtube_video
 for questions about dialogue/speech, or analyze_youtube_frames for questions about visual
 content (objects, people, counts) -- only use analyze_youtube_frames if actually needed,
 since it is much slower.
@@ -63,6 +65,8 @@ TOOLS = [
     TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA,
     ANALYZE_YOUTUBE_FRAMES_SCHEMA,
     ANALYZE_IMAGE_SCHEMA,
+    READ_CHESS_BOARD_IMAGE_SCHEMA,
+    BEST_CHESS_MOVES_SCHEMA,
 ]
 
 TOOL_FUNCTIONS = {
@@ -75,6 +79,8 @@ TOOL_FUNCTIONS = {
     "transcribe_youtube_video": transcribe_youtube_video,
     "analyze_youtube_frames": analyze_youtube_frames,
     "analyze_image": analyze_image,
+    "read_chess_board_image": read_chess_board_image,
+    "best_chess_moves": best_chess_moves,
 }
 
 MAX_ITERATIONS = 10
