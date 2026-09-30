@@ -231,6 +231,11 @@ def _download_youtube_video(url: str) -> str:
         "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
         "quiet": True,
         "noprogress": True,
+        # Without an explicit JS runtime, yt-dlp only enables deno by
+        # default (not installed here) and falls back to a degraded
+        # extraction path with a loud warning. node is already present on
+        # this system, so use it instead of leaving extraction degraded.
+        "js_runtimes": {"node": {}},
     }) as ydl:
         info = ydl.extract_info(url, download=True)
 
