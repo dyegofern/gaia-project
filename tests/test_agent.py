@@ -342,3 +342,16 @@ def test_agent_injects_reversal_hint_for_reversed_text_questions():
     assert answer.strip() == "right"
     first_user_message = captured_messages[0][1]["content"]
     assert "opposite of the word" in first_user_message.lower()
+
+
+def test_extract_final_answer_uses_last_marker_when_model_rambles_after_first():
+    from gaia_agent.agent import GaiaAgent
+
+    content = "FINAL ANSWER: Andrzej\n\nActually, reconsidering... I cannot verify.\n\nFINAL ANSWER: Andrzej"
+    assert GaiaAgent()._extract_final_answer(content) == "Andrzej"
+
+
+def test_extract_final_answer_falls_back_to_earlier_marker_if_last_is_empty():
+    from gaia_agent.agent import GaiaAgent
+
+    assert GaiaAgent()._extract_final_answer("FINAL ANSWER: Paris\nFINAL ANSWER:") == "Paris"

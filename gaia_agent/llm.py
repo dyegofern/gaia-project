@@ -1,5 +1,6 @@
 # gaia_agent/llm.py
 import os
+import threading
 import re
 import socket
 import time
@@ -165,11 +166,34 @@ def _maybe_wait_for_rate_limit(response, low_watermark=1000):
         time.sleep(min(wait_seconds, 90))
 
 
+_semaphores = {}
+_semaphores_lock = threading.Lock()
+
+
+def _concurrency_limit(backend):
+    override = os.environ.get("GAIA_LLM_CONCURRENCY")
+    if override:
+        return max(1, int(override))
+    # Lemonade's llama-server runs with --parallel 1: extra requests just
+    # queue server-side while the client timeout keeps ticking, so hold
+    # them back here instead. Cloud backends handle concurrent requests.
+    return 1 if backend == "lemonade" else 4
+
+
+def _semaphore_for(backend):
+    with _semaphores_lock:
+        if backend not in _semaphores:
+            _semaphores[backend] = threading.Semaphore(_concurrency_limit(backend))
+        return _semaphores[backend]
+
+
 def chat_completion(messages, tools=None, timeout=120):
     client, model = _get_client_and_model()
     kwargs = {"model": model, "messages": messages, "timeout": timeout}
     if tools:
         kwargs["tools"] = tools
-    raw_response = client.chat.completions.with_raw_response.create(**kwargs)
+    backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+    with _semaphore_for(backend):
+        raw_response = client.chat.completions.with_raw_response.create(**kwargs)
     _maybe_wait_for_rate_limit(raw_response)
     return raw_response.parse()

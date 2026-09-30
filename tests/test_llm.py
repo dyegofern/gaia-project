@@ -84,3 +84,54 @@ def test_maybe_wait_for_rate_limit_handles_missing_headers_gracefully(monkeypatc
     _maybe_wait_for_rate_limit(response, low_watermark=1000)
 
     assert sleep_calls == []
+
+
+def test_lemonade_calls_are_serialized_across_threads(monkeypatch):
+    # Lemonade's llama-server runs with --parallel 1, so concurrent requests
+    # just queue server-side -- and the client timeout keeps ticking while
+    # queued, turning parallel eval runs into timeouts. chat_completion must
+    # hold concurrent lemonade calls back in-process instead.
+    import threading
+    import time
+
+    from gaia_agent import llm
+
+    monkeypatch.delenv("GAIA_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("GAIA_LLM_CONCURRENCY", raising=False)
+    llm._semaphores.clear()
+
+    state = {"active": 0, "max_active": 0}
+    lock = threading.Lock()
+
+    def slow_create(**kwargs):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        time.sleep(0.05)
+        with lock:
+            state["active"] -= 1
+        raw = MagicMock()
+        raw.headers = {}
+        return raw
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.with_raw_response.create.side_effect = slow_create
+    monkeypatch.setattr(llm, "_get_client_and_model", lambda: (fake_client, "m"))
+
+    threads = [threading.Thread(target=chat_completion, args=([{"role": "user", "content": "hi"}],)) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert state["max_active"] == 1
+
+
+def test_llm_concurrency_env_override(monkeypatch):
+    from gaia_agent import llm
+
+    monkeypatch.setenv("GAIA_LLM_CONCURRENCY", "3")
+    assert llm._concurrency_limit("lemonade") == 3
+    monkeypatch.delenv("GAIA_LLM_CONCURRENCY")
+    assert llm._concurrency_limit("lemonade") == 1
+    assert llm._concurrency_limit("groq") > 1

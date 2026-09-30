@@ -299,7 +299,10 @@ class GaiaAgent:
     def _extract_final_answer(self, content: str) -> str:
         marker = "FINAL ANSWER:"
         if marker in content:
-            content = content.split(marker, 1)[1]
+            # The model sometimes restates its answer after rambling, so
+            # prefer the last marker that is actually followed by text.
+            candidates = [part.strip() for part in content.split(marker)[1:]]
+            content = next((c for c in reversed(candidates) if c), "")
         # Last-resort safety net: never surface a leaked, unexecuted
         # informal tool call as if it were an answer, however it got here.
         content = INFORMAL_TOOL_CALL_RE.sub("", content)

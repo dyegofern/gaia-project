@@ -50,12 +50,31 @@ Run on a single random question (fast smoke test):
 
     /home/dyego/rocm10-test/bin/python run_eval.py --random
 
-Run on the full question set (no submission):
+Run on the full question set (10 questions in parallel by default; every answer
+is saved to the SQLite file `gaia_runs.db` as soon as it finishes, one run id per
+invocation):
 
-    /home/dyego/rocm10-test/bin/python run_eval.py
+    /home/dyego/rocm10-test/bin/python run_eval.py > answers.txt
 
-Submit answers to the real leaderboard (requires a public HF Space URL hosting
-this code):
+    # --workers N sets how many questions run at once. On Lemonade the LLM calls
+    # themselves take turns (llama-server runs with --parallel 1; override with
+    # GAIA_LLM_CONCURRENCY), so extra workers mainly overlap tool time.
+
+Resume after an interruption or errors (re-runs only tasks that were interrupted,
+errored, empty, or gave up with "Unable to ..."; also adds missing questions):
+
+    /home/dyego/rocm10-test/bin/python run_eval.py --continue
+
+Export or submit stored answers later without re-running the agent:
+
+    /home/dyego/rocm10-test/bin/python run_eval.py --from-db --export answers_export.txt
+    /home/dyego/rocm10-test/bin/python run_eval.py --from-db --submit \
+        --username YOUR_HF_USERNAME \
+        --agent-code https://github.com/YOUR_USER/YOUR_REPO
+    # --run-id N picks a run other than the most recent.
+
+Submit answers to the real leaderboard right after a run (requires a public URL
+hosting this code):
 
     /home/dyego/rocm10-test/bin/python run_eval.py --submit \
         --username YOUR_HF_USERNAME \
