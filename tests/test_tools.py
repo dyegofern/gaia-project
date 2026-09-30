@@ -1,3 +1,5 @@
+import os
+
 from gaia_agent.tools import web_search
 
 
@@ -24,6 +26,33 @@ def test_download_gaia_file_handles_missing_file_gracefully():
     result = download_gaia_file("nonexistent-task-id-12345")
     assert isinstance(result, str)
     assert result.startswith("ERROR")
+
+
+from unittest.mock import patch, MagicMock
+
+import requests
+
+
+def test_download_gaia_file_retries_and_recovers_from_transient_404s(tmp_path):
+    # The GAIA scoring API's file endpoint has been observed live to 404
+    # for a task_id and then succeed seconds later with no client-side
+    # change -- download_gaia_file should retry rather than giving up on
+    # the first failure.
+    fake_404_response = MagicMock()
+    fake_404_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404")
+
+    fake_success_response = MagicMock()
+    fake_success_response.raise_for_status.return_value = None
+    fake_success_response.headers = {"content-disposition": 'attachment; filename="test.txt"'}
+    fake_success_response.content = b"hello world"
+
+    with patch("gaia_agent.tools.requests.get", side_effect=[fake_404_response, fake_success_response]), \
+         patch("gaia_agent.tools.time.sleep"), \
+         patch("gaia_agent.tools.SCRATCH_DIR", str(tmp_path)):
+        result = download_gaia_file("some-task-id")
+
+    assert not result.startswith("ERROR")
+    assert os.path.exists(result)
 
 
 from gaia_agent.tools import read_file

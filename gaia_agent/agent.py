@@ -111,12 +111,38 @@ def _parse_informal_tool_call(content: str):
     return name, args
 
 
+_COMMON_ENGLISH_WORDS = {
+    "the", "is", "you", "if", "and", "of", "to", "a", "in", "that", "this",
+    "as", "it", "for", "on", "with", "answer", "word", "sentence", "opposite",
+    "write", "understand",
+}
+
+
+def _looks_like_reversed_text(text: str) -> bool:
+    # Heuristic: if reversing the whole string turns it into recognizable
+    # English (several common short words appear), the original is almost
+    # certainly presented reversed/scrambled on purpose (a common GAIA
+    # question pattern) -- worth pre-computing deterministically rather
+    # than relying on the model to notice and choose to use python_exec.
+    reversed_text = text[::-1]
+    words = re.findall(r"[a-zA-Z']+", reversed_text.lower())
+    if len(words) < 4:
+        return False
+    hits = sum(1 for w in words if w in _COMMON_ENGLISH_WORDS)
+    return hits / len(words) >= 0.3
+
+
 class GaiaAgent:
     def __init__(self):
         print("GaiaAgent initialized.")
 
     def __call__(self, question: str, task_id: str | None = None) -> str:
         user_content = question
+        if _looks_like_reversed_text(question):
+            user_content += (
+                f"\n\n(This text appears to be reversed. Read it character-by-character "
+                f"reversed, it says: {question[::-1]!r})"
+            )
         if task_id:
             user_content += f"\n\n(task_id: {task_id})"
 

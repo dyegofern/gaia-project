@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 
 from openai import BadRequestError, RateLimitError
 
-from gaia_agent.agent import GaiaAgent, MAX_ITERATIONS
+from gaia_agent.agent import GaiaAgent, MAX_ITERATIONS, _looks_like_reversed_text
 
 
 def _make_fake_rate_limit_error():
@@ -309,3 +309,36 @@ def test_agent_never_returns_raw_informal_tool_call_xml_as_final_answer():
 
     assert "<tool_call>" not in answer
     assert "<function=" not in answer
+
+
+def test_looks_like_reversed_text_detects_reversed_sentence():
+    reversed_sentence = '.rewsna eht sa "tfel" drow eht fo etisoppo eht etirw ,ecnetnes siht dnatsrednu uoy fI'
+    assert _looks_like_reversed_text(reversed_sentence) is True
+
+
+def test_looks_like_reversed_text_ignores_normal_question():
+    normal = "How many studio albums were published by Mercedes Sosa between 2000 and 2009?"
+    assert _looks_like_reversed_text(normal) is False
+
+
+def test_agent_injects_reversal_hint_for_reversed_text_questions():
+    # Regression guard for the reversed-sentence question flip-flopping
+    # across runs ("right"/"hated"/"unfelt"/"feel"/"No") depending on
+    # whether the model happened to reverse a 90-character string
+    # correctly by eye. The agent should deterministically detect this
+    # pattern and inject the pre-computed reversal, rather than relying on
+    # the model to notice and choose to use python_exec.
+    reversed_sentence = '.rewsna eht sa "tfel" drow eht fo etisoppo eht etirw ,ecnetnes siht dnatsrednu uoy fI'
+    captured_messages = []
+
+    def fake_chat_completion(messages, tools=None, **kwargs):
+        captured_messages.append([dict(m) for m in messages])
+        return _make_final_response("FINAL ANSWER: right")
+
+    with patch("gaia_agent.agent.chat_completion", side_effect=fake_chat_completion):
+        agent = GaiaAgent()
+        answer = agent(reversed_sentence)
+
+    assert answer.strip() == "right"
+    first_user_message = captured_messages[0][1]["content"]
+    assert "opposite of the word" in first_user_message.lower()

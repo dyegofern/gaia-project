@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 import pandas as pd
 import requests
@@ -77,14 +78,34 @@ SCORING_API_URL = "https://agents-course-unit4-scoring.hf.space"
 SCRATCH_DIR = os.path.join(os.path.dirname(__file__), "..", ".scratch")
 
 
+DOWNLOAD_GAIA_FILE_MAX_RETRIES = 3
+DOWNLOAD_GAIA_FILE_RETRY_DELAY = 3
+
+
 def download_gaia_file(task_id: str) -> str:
     os.makedirs(SCRATCH_DIR, exist_ok=True)
     url = f"{SCORING_API_URL}/files/{task_id}"
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-    except Exception as e:
-        return f"ERROR: could not download file for task {task_id}: {e}"
+
+    last_error = None
+    for attempt in range(DOWNLOAD_GAIA_FILE_MAX_RETRIES):
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            break
+        except requests.exceptions.HTTPError as e:
+            # The GAIA scoring API's file endpoint is known to be
+            # intermittently flaky (observed live: the same task_id 404s
+            # then succeeds seconds later with no client-side change) --
+            # retry a few times with a short delay before giving up,
+            # rather than treating the first 404 as final.
+            last_error = e
+            if attempt < DOWNLOAD_GAIA_FILE_MAX_RETRIES - 1:
+                time.sleep(DOWNLOAD_GAIA_FILE_RETRY_DELAY)
+            continue
+        except Exception as e:
+            return f"ERROR: could not download file for task {task_id}: {e}"
+    else:
+        return f"ERROR: could not download file for task {task_id} after {DOWNLOAD_GAIA_FILE_MAX_RETRIES} attempts: {last_error}"
 
     content_disp = resp.headers.get("content-disposition", "")
     match = re.search(r'filename="?([^";]+)"?', content_disp)
