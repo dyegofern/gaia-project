@@ -116,7 +116,7 @@ def test_lemonade_calls_are_serialized_across_threads(monkeypatch):
 
     fake_client = MagicMock()
     fake_client.chat.completions.with_raw_response.create.side_effect = slow_create
-    monkeypatch.setattr(llm, "_get_client_and_model", lambda: (fake_client, "m"))
+    monkeypatch.setattr(llm, "_get_client_and_model", lambda backend=None: (fake_client, "m"))
 
     threads = [threading.Thread(target=chat_completion, args=([{"role": "user", "content": "hi"}],)) for _ in range(4)]
     for t in threads:
