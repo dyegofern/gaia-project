@@ -400,6 +400,8 @@
       </table>
     </div>
 
+    <div class="card" id="detailsPanel" style="display: none; margin-top: 30px;"></div>
+
     <div class="card" style="margin-top: 30px;">
       <div class="card-header">
         <h2>Live Logs</h2>
@@ -453,6 +455,12 @@
         // Update stats
         document.getElementById('stat-total-runs').textContent = data.totalRuns || 0;
         document.getElementById('stat-db-status').textContent = data.gaiaDbExists ? '✓' : '✗';
+
+        document.getElementById('stat-completed').textContent = (data.recentRuns || []).reduce((n, r) => n + r.completed, 0);
+        document.getElementById('stat-failed').textContent = (data.recentRuns || []).reduce((n, r) => n + r.failed, 0);
+        if (selectedRunId !== null && document.getElementById('detailsPanel').style.display !== 'none') {
+          viewRun(selectedRunId, true);
+        }
 
         // Update recent runs
         if (data.recentRuns && data.recentRuns.length > 0) {
@@ -578,51 +586,66 @@
       }
     }
 
-    async function viewRun(runId) {
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    async function viewRun(runId, isRefresh = false) {
+      selectedRunId = runId;
       try {
         const res = await fetch(`/api/run/${runId}`);
         const data = await res.json();
 
-        if (!data.run) {
-          alert('Run not found');
+        if (!res.ok || !data.run) {
+          addLog('error', `Run #${runId}: ${data.error || 'not found'}`);
           return;
         }
-
-        addLog('info', `Viewing run #${runId}: ${data.run.status} (${data.run.completed}/${data.run.total_questions})`);
 
         socket.emit('subscribe-run', runId);
 
         const detailsPanel = document.getElementById('detailsPanel');
         detailsPanel.innerHTML = `
-          <h3>Run #${runId} Details</h3>
-          <p><strong>Backend:</strong> ${data.run.backend || 'unknown'}</p>
-          <p><strong>Started:</strong> ${formatDate(data.run.started_at)}</p>
-          <p><strong>Status:</strong> <span class="status-badge ${data.run.status}">${data.run.status}</span></p>
-          <p><strong>Completed:</strong> ${data.run.completed}/${data.run.total_questions}</p>
+          <div class="card-header">
+            <h2>Run #${esc(runId)} Details</h2>
+            <button class="btn btn-secondary" onclick="closeDetails()">Close</button>
+          </div>
+          <p><strong>Backend:</strong> ${esc(data.run.backend || 'unknown')}</p>
+          <p><strong>Started:</strong> ${esc(formatDate(data.run.started_at))}</p>
+          <p><strong>Status:</strong> <span class="status-badge ${esc(data.run.status)}">${esc(data.run.status)}</span></p>
+          <p><strong>Completed:</strong> ${esc(data.run.completed)}/${esc(data.run.total_questions)}</p>
 
-          <h4 style="margin-top: 20px;">Questions:</h4>
+          <h4 style="margin-top: 20px;">Questions</h4>
           <table>
-            <thead>
-              <tr><th>Task ID</th><th>Status</th></tr>
-            </thead>
+            <thead><tr><th>Task ID</th><th>Status</th><th>Question</th><th>Answer</th></tr></thead>
             <tbody>
-              ${data.questions?.map(q => `<tr><td>${q.task_id}</td><td>${q.status}</td></tr>`).join('') || '<tr><td colspan="2">No questions</td></tr>'}
+              ${data.questions.map(q => `<tr>
+                <td title="${esc(q.task_id)}">${esc(String(q.task_id).slice(0, 8))}</td>
+                <td>${esc(q.status)}</td>
+                <td>${esc(String(q.question).slice(0, 120))}</td>
+                <td>${esc(String(q.answer ?? '').slice(0, 120))}</td></tr>`).join('') || '<tr><td colspan="4">No questions</td></tr>'}
             </tbody>
           </table>
 
-          <h4 style="margin-top: 20px;">Tool Stats:</h4>
+          <h4 style="margin-top: 20px;">Tool Stats</h4>
           <table>
             <thead><tr><th>Tool</th><th>Calls</th><th>Success</th><th>Errors</th></tr></thead>
             <tbody>
-              ${data.tools?.map(t => `<tr><td>${t.tool_name}</td><td>${t.call_count}</td><td>${t.success_count}</td><td>${t.error_count}</td></tr>`).join('') || '<tr><td colspan="4">No tool stats</td></tr>'}
+              ${data.tools.map(t => `<tr><td>${esc(t.tool_name)}</td><td>${esc(t.call_count)}</td><td>${esc(t.success_count)}</td><td>${esc(t.error_count)}</td></tr>`).join('') || '<tr><td colspan="4">No tool stats</td></tr>'}
             </tbody>
           </table>
         `;
 
         detailsPanel.style.display = 'block';
+        if (!isRefresh) detailsPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } catch (error) {
         addLog('error', `Failed to view run: ${error.message}`);
+        alert(`Failed to view run #${runId}: ${error.message}`);
       }
+    }
+
+    function closeDetails() {
+      selectedRunId = null;
+      document.getElementById('detailsPanel').style.display = 'none';
     }
 
     function toggleLogs() {
