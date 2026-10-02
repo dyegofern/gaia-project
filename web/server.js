@@ -220,7 +220,10 @@ app.get('/api/run-progress', (req, res) => {
 app.post('/api/trigger-run', (req, res) => {
   try {
     const { type, workers } = req.body;
-    const workersArg = workers || 10;
+    const workersArg = Number.parseInt(workers, 10);
+    if (!Number.isInteger(workersArg) || workersArg < 1 || workersArg > 64) {
+      return res.status(400).json({ error: 'workers must be an integer between 1 and 64' });
+    }
 
     const pythonBin = '/home/dyego/rocm10-test/bin/python';
     const scriptPath = join(__dirname, '..', 'run_eval.py');
