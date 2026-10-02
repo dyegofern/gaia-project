@@ -2,6 +2,7 @@ import json
 import re
 import time
 import functools
+import contextvars
 from openai import APIError, RateLimitError, BadRequestError
 
 from gaia_agent.llm import chat_completion
@@ -96,30 +97,39 @@ def set_global_db(db, run_id):
     _global_run_id = run_id
 
 
+_current_task_id = contextvars.ContextVar("gaia_task_id", default=None)
+
+
+def _record(tool_name, success, duration_ms, error_message=None):
+    # Bookkeeping must never break (or change the result of) a tool call.
+    if _global_db is None or _global_run_id is None:
+        return
+    try:
+        _global_db.record_tool_call(
+            _global_run_id, _current_task_id.get() or "unknown",
+            tool_name, success=success, duration_ms=duration_ms,
+            error_message=error_message,
+        )
+    except Exception as e:
+        print(f"WARNING: could not record tool call {tool_name}: {e}", flush=True)
+
+
 def _instrument_tool(tool_func, tool_name):
-    """Decorator to instrument tool calls with timing and success tracking."""
+    """Wrap a tool to record timing and success. Tools report most failures
+    by returning an "ERROR: ..." string rather than raising, so that counts
+    as a failure too, and the message is stored for later debugging."""
     @functools.wraps(tool_func)
     def wrapper(*args, **kwargs):
-        if _global_db is None or _global_run_id is None:
-            return tool_func(*args, **kwargs)
-
         start_time = time.time()
         try:
             result = tool_func(*args, **kwargs)
-            duration_ms = int((time.time() - start_time) * 1000)
-            _global_db.record_tool_call(
-                _global_run_id, _global_task_id or "unknown",
-                tool_name, success=True, duration_ms=duration_ms
-            )
-            return result
         except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            _global_db.record_tool_call(
-                _global_run_id, _global_task_id or "unknown",
-                tool_name, success=False, duration_ms=duration_ms,
-                error_message=str(e)
-            )
+            _record(tool_name, False, int((time.time() - start_time) * 1000), str(e)[:500])
             raise
+        failed = isinstance(result, str) and result.lstrip().startswith("ERROR")
+        _record(tool_name, not failed, int((time.time() - start_time) * 1000),
+                result[:500] if failed else None)
+        return result
     return wrapper
 
 
@@ -210,8 +220,7 @@ class GaiaAgent:
         print("GaiaAgent initialized.")
 
     def __call__(self, question: str, task_id: str | None = None) -> str:
-        global _global_task_id
-        _global_task_id = task_id
+        _current_task_id.set(task_id)
         user_content = question
         if _looks_like_reversed_text(question):
             user_content += (

@@ -26,7 +26,7 @@ def fetch_questions():
 _print_lock = threading.Lock()
 
 
-_give_up_prefixes = ("unable to", "cannot determine", "can't determine", "could not", "couldn't", "i cannot", "i can't", "i was unable", "no answer")
+_give_up_prefixes = ("unable to", "cannot determine", "can't determine", "could not", "couldn't", "i cannot", "i can't", "i was unable", "i am unable", "i'm unable", "i'm not able", "i am not able", "no answer", "data not available", "not available", "insufficient information")
 
 
 def _answer_failed(answer):
@@ -34,7 +34,8 @@ def _answer_failed(answer):
     # downloads, not real answers -- keep them retryable via --continue.
     if not answer or not answer.strip() or answer.startswith("AGENT ERROR"):
         return True
-    return answer.strip().lower().startswith(_give_up_prefixes)
+    normalized = answer.strip().lower().replace("\u2019", "'").replace("\u2018", "'")
+    return normalized.startswith(_give_up_prefixes)
 
 
 def verify_answer(question: str, answer: str) -> dict:
@@ -78,9 +79,7 @@ def run_agent_on_questions(agent, db, run_id, questions, workers=DEFAULT_WORKERS
         use_tqdm = False
 
     def work(item):
-        global _global_task_id
         task_id, question_text = item["task_id"], item["question"]
-        _global_task_id = task_id
         db.mark_running(run_id, task_id)
         try:
             answer = agent(question_text, task_id=task_id)
@@ -271,8 +270,6 @@ def validate_environment():
 
 
 def run_and_record(args, db):
-    global _global_task_id
-    _global_task_id = None
 
     backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
 

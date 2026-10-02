@@ -81,41 +81,102 @@ SCRATCH_DIR = os.path.join(os.path.dirname(__file__), "..", ".scratch")
 
 DOWNLOAD_GAIA_FILE_MAX_RETRIES = 3
 DOWNLOAD_GAIA_FILE_RETRY_DELAY = 3
+GAIA_DATASET_FILE_URL = "https://huggingface.co/datasets/gaia-benchmark/GAIA/resolve/main/2023/validation/{name}"
+# Optional folder of manually supplied attachments, named "<task_id>.<ext>".
+LOCAL_FILES_DIR = os.environ.get("GAIA_FILES_DIR", os.path.join(os.path.dirname(__file__), "..", "files"))
+_question_file_names = None
+
+
+def _attachment_name(task_id: str):
+    """File name of the task's attachment, as listed by the scoring API."""
+    global _question_file_names
+    if _question_file_names is None:
+        try:
+            resp = requests.get(f"{SCORING_API_URL}/questions", timeout=15)
+            resp.raise_for_status()
+            _question_file_names = {q["task_id"]: q.get("file_name") for q in resp.json()}
+        except Exception:
+            return None
+    return _question_file_names.get(task_id) or None
+
+
+def _find_local_attachment(task_id: str):
+    for folder in (LOCAL_FILES_DIR, SCRATCH_DIR):
+        if os.path.isdir(folder):
+            for name in sorted(os.listdir(folder)):
+                path = os.path.join(folder, name)
+                if name.startswith(task_id) and os.path.isfile(path) and os.path.getsize(path) > 0:
+                    return os.path.abspath(path)
+    return None
+
+
+def _download_from_gaia_dataset(task_id: str):
+    """Fallback: the gated gaia-benchmark/GAIA dataset (needs an HF_TOKEN whose
+    account has accepted the dataset's terms). Returns (path, None) or
+    (None, reason)."""
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        return None, "HF_TOKEN is not set"
+    name = _attachment_name(task_id)
+    if not name:
+        return None, "attachment file name unknown"
+    try:
+        resp = requests.get(GAIA_DATASET_FILE_URL.format(name=name), timeout=60,
+                            headers={"Authorization": f"Bearer {token}"})
+    except Exception as e:
+        return None, str(e)
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code} (the HF account likely lacks access to gaia-benchmark/GAIA)"
+    path = os.path.join(SCRATCH_DIR, name)
+    with open(path, "wb") as f:
+        f.write(resp.content)
+    return os.path.abspath(path), None
 
 
 def download_gaia_file(task_id: str) -> str:
     os.makedirs(SCRATCH_DIR, exist_ok=True)
-    url = f"{SCORING_API_URL}/files/{task_id}"
 
+    cached = _find_local_attachment(task_id)
+    if cached:
+        return cached
+
+    url = f"{SCORING_API_URL}/files/{task_id}"
     last_error = None
     for attempt in range(DOWNLOAD_GAIA_FILE_MAX_RETRIES):
         try:
             resp = requests.get(url, timeout=30)
+            if resp.status_code == 404 and "No file path associated" in resp.text:
+                # The server itself has no file for this task; retrying can't help.
+                last_error = "scoring API has no file for this task (404 'No file path associated')"
+                break
             resp.raise_for_status()
             break
         except requests.exceptions.HTTPError as e:
-            # The GAIA scoring API's file endpoint is known to be
-            # intermittently flaky (observed live: the same task_id 404s
-            # then succeeds seconds later with no client-side change) --
-            # retry a few times with a short delay before giving up,
-            # rather than treating the first 404 as final.
+            # The file endpoint is intermittently flaky (the same task_id 404s
+            # then succeeds seconds later), so retry other HTTP errors briefly.
             last_error = e
             if attempt < DOWNLOAD_GAIA_FILE_MAX_RETRIES - 1:
                 time.sleep(DOWNLOAD_GAIA_FILE_RETRY_DELAY)
             continue
         except Exception as e:
-            return f"ERROR: could not download file for task {task_id}: {e}"
+            last_error = e
+            break
     else:
+        resp = None
+    if resp is None or not resp.ok:
+        path, reason = _download_from_gaia_dataset(task_id)
+        if path:
+            return path
         return (
-            f"ERROR: Could not download file for task {task_id} after "
-            f"{DOWNLOAD_GAIA_FILE_MAX_RETRIES} attempts. "
-            "The GAIA scoring API may be temporarily unavailable. "
-            "Try running with --continue later."
+            f"ERROR: the attachment for task {task_id} is unavailable ({last_error}; "
+            f"GAIA dataset fallback: {reason}). Do not retry. Answer from the question text "
+            "alone only if that is genuinely sufficient; otherwise reply exactly "
+            "'Unable to access the attached file'."
         )
 
     content_disp = resp.headers.get("content-disposition", "")
     match = re.search(r'filename="?([^";]+)"?', content_disp)
-    filename = match.group(1) if match else task_id
+    filename = match.group(1) if match else (_attachment_name(task_id) or task_id)
 
     path = os.path.join(SCRATCH_DIR, filename)
     with open(path, "wb") as f:
@@ -309,8 +370,8 @@ DEFAULT_IMAGE_ANALYSIS_PROMPT = (
 IMAGE_ANALYSIS_MAX_DIMENSION = 1024
 
 
-def _describe_frame(image_path: str) -> str:
-    return analyze_image(image_path)
+def _describe_frame(image_path: str, question: str = "") -> str:
+    return analyze_image(image_path, question)
 
 
 def analyze_image(path: str, question: str = "") -> str:
@@ -376,7 +437,7 @@ ANALYZE_IMAGE_SCHEMA = {
 }
 
 
-def analyze_youtube_frames(url: str) -> str:
+def analyze_youtube_frames(url: str, question: str = "") -> str:
     """Describe several frames sampled evenly across the video using a
     vision-capable model -- slow (one model call per frame) since it's only
     needed for questions about what is visually shown, not said.
@@ -406,7 +467,7 @@ def analyze_youtube_frames(url: str) -> str:
     descriptions = []
     for i, fname in enumerate(frame_files):
         try:
-            desc = _describe_frame(os.path.join(frames_dir, fname))
+            desc = _describe_frame(os.path.join(frames_dir, fname), question)
             descriptions.append(f"Frame {i + 1} (of {len(frame_files)}, sampled across the video): {desc}")
         except Exception as e:
             descriptions.append(f"Frame {i + 1}: ERROR describing frame: {e}")
@@ -427,7 +488,8 @@ ANALYZE_YOUTUBE_FRAMES_SCHEMA = {
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "The YouTube video URL."}
+                "url": {"type": "string", "description": "The YouTube video URL."},
+                "question": {"type": "string", "description": "Optional: what to look for in each frame (e.g. 'how many bird species are visible?')."},
             },
             "required": ["url"],
         },

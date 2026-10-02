@@ -24,13 +24,13 @@ CREATE TABLE IF NOT EXISTS results (
     PRIMARY KEY (run_id, task_id)
 );
 CREATE TABLE IF NOT EXISTS tool_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL REFERENCES runs(run_id),
     task_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     success BOOLEAN NOT NULL,
     duration_ms INTEGER NOT NULL,
-    error_message TEXT,
-    PRIMARY KEY (run_id, task_id, tool_name)
+    error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_results_run_status ON results(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_results_status ON results(status);
@@ -48,7 +48,23 @@ class ResultsDB:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA cache_size=-64000")
+            self._migrate_tool_usage(conn)
             conn.executescript(_SCHEMA)
+
+    @staticmethod
+    def _migrate_tool_usage(conn):
+        # Older DBs keyed tool_usage on (run_id, task_id, tool_name), so a
+        # second call to the same tool within one task violated the key.
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(tool_usage)")]
+        if cols and "id" not in cols:
+            conn.execute("ALTER TABLE tool_usage RENAME TO tool_usage_old")
+            conn.execute("DROP INDEX IF EXISTS idx_tool_stats_run")
+            conn.executescript(_SCHEMA)
+            conn.execute(
+                "INSERT INTO tool_usage (run_id, task_id, tool_name, success, duration_ms, error_message) "
+                "SELECT run_id, task_id, tool_name, success, duration_ms, error_message FROM tool_usage_old"
+            )
+            conn.execute("DROP TABLE tool_usage_old")
 
     @contextlib.contextmanager
     def _connect(self):
