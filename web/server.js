@@ -6,7 +6,7 @@ import cors from 'cors';
 import { execFile, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve, sep } from 'path';
-import { existsSync, statSync, readFileSync, mkdirSync, openSync, closeSync, readSync } from 'fs';
+import { existsSync, statSync, readFileSync, mkdirSync, openSync, closeSync, readSync, writeFileSync, readdirSync } from 'fs';
 import http from 'http';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -182,6 +182,20 @@ const RUNS_SQL = `
 `;
 
 const LOGS_DIR = join(__dirname, '..', 'logs');
+const FILES_DIR = join(__dirname, '..', 'files');
+const SCORING_API = 'https://agents-course-unit4-scoring.hf.space';
+const GAIA_DATASET_URL = 'https://huggingface.co/datasets/gaia-benchmark/GAIA/resolve/main/2023/validation/';
+
+async function questionsWithFiles() {
+  const res = await fetch(`${SCORING_API}/questions`, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`scoring API returned ${res.status}`);
+  return (await res.json()).filter(q => q.file_name);
+}
+
+function hasLocalAttachment(taskId) {
+  return existsSync(FILES_DIR) &&
+    readdirSync(FILES_DIR).some(n => n.startsWith(taskId) && statSync(join(FILES_DIR, n)).size > 0);
+}
 
 function isRunEvalProcess(pid) {
   // Guard against pid reuse: only treat it as ours if it is really run_eval.py.
@@ -309,6 +323,50 @@ app.post('/api/run/:runId/cancel', (req, res) => {
     // SIGTERM: run_eval resets in-flight questions to pending, so --continue resumes cleanly.
     process.kill(row.pid, 'SIGTERM');
     res.json({ success: true, message: `Cancelling run ${id} (pid ${row.pid})` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/attachments', async (req, res) => {
+  try {
+    const questions = await questionsWithFiles();
+    const token = process.env.HF_TOKEN;
+    const rows = await Promise.all(questions.map(async (q) => {
+      const probe = async (url, headers = {}) => {
+        try {
+          const r = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+          r.body?.cancel();
+          return r.ok;
+        } catch { return null; }
+      };
+      return {
+        task_id: q.task_id,
+        file_name: q.file_name,
+        question: q.question.slice(0, 100),
+        server: await probe(`${SCORING_API}/files/${q.task_id}`),
+        local: hasLocalAttachment(q.task_id),
+        dataset: token ? await probe(GAIA_DATASET_URL + q.file_name, { Authorization: `Bearer ${token}` }) : null,
+      };
+    }));
+    res.json(rows);
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
+// Upload an attachment by hand (the agent looks in files/ first). The stored
+// name comes from the question list, never from the client.
+app.post('/api/attachments/:taskId', express.raw({ type: () => true, limit: '50mb' }), async (req, res) => {
+  try {
+    const q = (await questionsWithFiles()).find(x => x.task_id === req.params.taskId);
+    if (!q) return res.status(404).json({ error: 'No attachment question with that task id' });
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'Empty upload' });
+    }
+    mkdirSync(FILES_DIR, { recursive: true });
+    writeFileSync(join(FILES_DIR, q.file_name), req.body);
+    res.json({ success: true, saved_as: q.file_name, bytes: req.body.length });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

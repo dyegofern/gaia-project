@@ -424,6 +424,21 @@
       </table>
     </div>
 
+    <div class="card" style="margin-top: 30px;">
+      <div class="card-header">
+        <h2>Attachments</h2>
+        <button class="btn btn-secondary" onclick="loadAttachments()">Check</button>
+      </div>
+      <p style="font-size: 12px; color: var(--text-secondary);">
+        Questions with attached files. The agent uses the first source available:
+        <em>local</em> (files you upload here), the scoring <em>server</em>, then the gated GAIA <em>dataset</em>.
+      </p>
+      <table>
+        <thead><tr><th>Task</th><th>File</th><th>Server</th><th>Dataset</th><th>Local</th><th>Upload</th></tr></thead>
+        <tbody id="attachBody"><tr><td colspan="6" style="color: var(--text-secondary);">Click Check</td></tr></tbody>
+      </table>
+    </div>
+
     <div class="modal-backdrop" id="detailsModal" onclick="if (event.target === this) closeDetails()">
       <div class="modal-box" id="detailsPanel" role="dialog" aria-modal="true"></div>
     </div>
@@ -680,6 +695,40 @@
     }
 
     let openTaskId = null;
+
+    const mark = v => v === true ? '<span style="color: var(--accent-green)">✓</span>'
+      : v === false ? '<span style="color: var(--accent-red)">✗</span>' : '<span title="unknown / not checked">?</span>';
+
+    async function loadAttachments() {
+      const body = document.getElementById('attachBody');
+      body.innerHTML = '<tr><td colspan="6">Checking...</td></tr>';
+      try {
+        const res = await fetch('/api/attachments');
+        const rows = await res.json();
+        if (!res.ok) { body.innerHTML = `<tr><td colspan="6">${esc(rows.error)}</td></tr>`; return; }
+        body.innerHTML = rows.map(r => `<tr>
+          <td title="${esc(r.question)}">${esc(r.task_id.slice(0, 8))}</td>
+          <td>${esc(r.file_name.replace(r.task_id, '…'))}</td>
+          <td>${mark(r.server)}</td><td>${mark(r.dataset)}</td><td>${mark(r.local)}</td>
+          <td><input type="file" onchange="uploadAttachment('${esc(r.task_id)}', this)" style="font-size: 11px; max-width: 170px;"></td>
+        </tr>`).join('');
+      } catch (e) {
+        body.innerHTML = `<tr><td colspan="6">${esc(e.message)}</td></tr>`;
+      }
+    }
+
+    async function uploadAttachment(taskId, input) {
+      const file = input.files[0];
+      if (!file) return;
+      try {
+        const res = await fetch(`/api/attachments/${encodeURIComponent(taskId)}`, { method: 'POST', body: file });
+        const data = await res.json();
+        addLog(res.ok ? 'info' : 'error', res.ok ? `Saved ${data.saved_as} (${data.bytes} bytes)` : `Upload failed: ${data.error}`);
+        loadAttachments();
+      } catch (e) {
+        addLog('error', `Upload failed: ${e.message}`);
+      }
+    }
 
     async function loadRunLog(runId) {
       const box = document.getElementById('runLog');
