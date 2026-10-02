@@ -3,6 +3,22 @@
 A local agent that answers GAIA benchmark questions via the HF Agents Course
 Unit 4 scoring API, using tool-calling with a choice of LLM backends.
 
+## New Features
+
+See [QUICKSTART.md](QUICKSTART.md) for setup and usage guide.
+
+### Recent Improvements
+
+- **Rate Limit Retry** - Exponential backoff for API rate limits
+- **Backend Health Check** - Pre-flight checks before runs
+- **Chess Confidence Threshold** - 0.2 IoU threshold for reliable piece detection
+- **Tool Usage Statistics** - Track tool calls, success rates, durations
+- **Answer Verification** - Validate answer format and quality
+- **SQLite Optimizations** - WAL mode, indexes, 64MB cache
+- **Environment Validation** - Pre-flight checks for Python, tools, backends
+- **Better Error Messages** - Actionable error messages for common failures
+- **Web Monitor** - Real-time dashboard at `localhost:3000`
+
 ## Prerequisites
 
 - Python environment: `/home/dyego/rocm10-test` (ROCm-enabled venv), with
@@ -79,6 +95,25 @@ hosting this code):
     /home/dyego/rocm10-test/bin/python run_eval.py --submit \
         --username YOUR_HF_USERNAME \
         --agent-code https://huggingface.co/spaces/YOUR_SPACE/tree/main
+
+## Web Monitor
+
+Real-time dashboard for monitoring agent runs:
+
+```bash
+cd web
+npm install
+npm start
+# Open http://localhost:3000 in your browser
+```
+
+Features:
+- Real-time run progress with progress bars
+- Tool usage statistics (calls, success rates, duration)
+- Backend health indicators
+- Environment validation
+- Start/resume runs from the UI
+- Live logs from running agent
 
 ## Running tests
 

@@ -1,7 +1,8 @@
 import json
 import re
-
-from openai import APIError, RateLimitError
+import time
+import functools
+from openai import APIError, RateLimitError, BadRequestError
 
 from gaia_agent.llm import chat_completion
 from gaia_agent.tools import (
@@ -69,7 +70,7 @@ TOOLS = [
     BEST_CHESS_MOVES_SCHEMA,
 ]
 
-TOOL_FUNCTIONS = {
+_TOOL_FUNCTIONS = {
     "web_search": web_search,
     "fetch_page": fetch_page,
     "download_gaia_file": download_gaia_file,
@@ -83,18 +84,76 @@ TOOL_FUNCTIONS = {
     "best_chess_moves": best_chess_moves,
 }
 
+_global_db = None
+_global_run_id = None
+_task_id_cache = None
+
+
+def set_global_db(db, run_id):
+    """Set the global DB for tool usage tracking."""
+    global _global_db, _global_run_id
+    _global_db = db
+    _global_run_id = run_id
+
+
+def _instrument_tool(tool_func, tool_name):
+    """Decorator to instrument tool calls with timing and success tracking."""
+    @functools.wraps(tool_func)
+    def wrapper(*args, **kwargs):
+        if _global_db is None or _global_run_id is None:
+            return tool_func(*args, **kwargs)
+
+        start_time = time.time()
+        try:
+            result = tool_func(*args, **kwargs)
+            duration_ms = int((time.time() - start_time) * 1000)
+            _global_db.record_tool_call(
+                _global_run_id, _global_task_id or "unknown",
+                tool_name, success=True, duration_ms=duration_ms
+            )
+            return result
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            _global_db.record_tool_call(
+                _global_run_id, _global_task_id or "unknown",
+                tool_name, success=False, duration_ms=duration_ms,
+                error_message=str(e)
+            )
+            raise
+    return wrapper
+
+
+# Instrumented tool functions
+TOOL_FUNCTIONS = {
+    name: _instrument_tool(func, name) for name, func in _TOOL_FUNCTIONS.items()
+}
+
+
 MAX_ITERATIONS = 10
 
 
 def _format_api_error(e: APIError) -> str:
-    # RateLimitError (e.g. Groq's daily token quota, distinct from the
-    # per-minute limit chat_completion already paces around) carries a
-    # specific, actionable message from the server -- surface it instead
-    # of a generic "repeated API errors" string that hides what actually
-    # went wrong and whether retrying now would even help.
     if isinstance(e, RateLimitError):
-        return f"AGENT ERROR: rate limited ({e})"
-    return "AGENT ERROR: could not produce a final answer after repeated API errors"
+        error_msg = str(e)
+        if "tokens per day" in error_msg or "TPD" in error_msg:
+            return (
+                "AGENT ERROR: Rate limit exceeded - "
+                "You've reached your daily token quota. "
+                f"Please wait for the quota to reset or use a different backend. ({error_msg})"
+            )
+        elif "tokens per minute" in error_msg:
+            return (
+                "AGENT ERROR: Rate limit exceeded - "
+                "You've exceeded the per-minute token limit. "
+                f"Please wait before retrying. ({error_msg})"
+            )
+        return f"AGENT ERROR: Rate limited ({e})"
+    elif isinstance(e, BadRequestError):
+        return f"AGENT ERROR: Bad request - {e}"
+    elif isinstance(e, ConnectionError):
+        return f"AGENT ERROR: Connection failed - Could not reach LLM server. Please check your backend is running."
+    else:
+        return f"AGENT ERROR: Could not produce a final answer after repeated API errors ({type(e).__name__})"
 
 
 # Some models (e.g. Qwen3.5 on Lemonade) sometimes write tool calls as
@@ -151,6 +210,8 @@ class GaiaAgent:
         print("GaiaAgent initialized.")
 
     def __call__(self, question: str, task_id: str | None = None) -> str:
+        global _global_task_id
+        _global_task_id = task_id
         user_content = question
         if _looks_like_reversed_text(question):
             user_content += (

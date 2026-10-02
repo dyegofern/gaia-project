@@ -1,14 +1,19 @@
-# gaia_agent/llm.py
 import os
 import threading
 import re
 import socket
 import time
-import requests
-from openai import OpenAI, RateLimitError, APIError
-import backoff
+from functools import wraps
+from random import uniform
+
+from openai import OpenAI, RateLimitError
 
 _ipv4_patch_applied = False
+_retry_stats = {
+    "total_retries": 0,
+    "successful_retries": 0,
+    "failed_retries": 0,
+}
 
 
 def _force_ipv4_dns():
@@ -82,9 +87,6 @@ def _get_client_and_model():
     backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
 
     if backend == "hf" and not os.environ.get("HF_TOKEN"):
-        # Never serve a cached client for a token-less request: the token
-        # may have been unset since the cache entry was built (e.g. across
-        # tests), and a stale client would silently use a stale/no token.
         raise RuntimeError(
             "GAIA_LLM_BACKEND is set to 'hf' but the HF_TOKEN environment "
             "variable is not set. Set HF_TOKEN to a Hugging Face access "
@@ -92,9 +94,6 @@ def _get_client_and_model():
         )
 
     if backend == "groq" and not os.environ.get("GROQ_API_KEY"):
-        # Never serve a cached client for a token-less request: the token
-        # may have been unset since the cache entry was built (e.g. across
-        # tests), and a stale client would silently use a stale/no token.
         raise RuntimeError(
             "GAIA_LLM_BACKEND is set to 'groq' but the GROQ_API_KEY "
             "environment variable is not set. Set GROQ_API_KEY to a Groq "
@@ -102,9 +101,6 @@ def _get_client_and_model():
         )
 
     if backend == "gemini" and not os.environ.get("GEMINI_API_KEY"):
-        # Never serve a cached client for a token-less request: the token
-        # may have been unset since the cache entry was built (e.g. across
-        # tests), and a stale client would silently use a stale/no token.
         raise RuntimeError(
             "GAIA_LLM_BACKEND is set to 'gemini' but the GEMINI_API_KEY "
             "environment variable is not set. Set GEMINI_API_KEY to a Gemini "
@@ -122,7 +118,6 @@ _RESET_DURATION_RE = re.compile(
 
 
 def _parse_reset_seconds(value):
-    # Groq-style headers give durations like "12.5s", "1m2.5s", or "1h16m19.2s".
     if value is None:
         return None
     value = value.strip().lower()
@@ -161,9 +156,6 @@ def _maybe_wait_for_rate_limit(response, low_watermark=1000):
 
     wait_seconds = _parse_reset_seconds(reset)
     if wait_seconds is not None and wait_seconds > 0:
-        # Cap the wait: this is meant to smooth over a rolling per-minute
-        # token window, not to block indefinitely if a header is ever
-        # misread or a much longer (e.g. daily) limit is reported here.
         time.sleep(min(wait_seconds, 90))
 
 
@@ -175,9 +167,6 @@ def _concurrency_limit(backend):
     override = os.environ.get("GAIA_LLM_CONCURRENCY")
     if override:
         return max(1, int(override))
-    # Lemonade's llama-server runs with --parallel 1: extra requests just
-    # queue server-side while the client timeout keeps ticking, so hold
-    # them back here instead. Cloud backends handle concurrent requests.
     return 1 if backend == "lemonade" else 4
 
 
@@ -188,72 +177,51 @@ def _semaphore_for(backend):
         return _semaphores[backend]
 
 
-@backoff.on_exception(
-    backoff.expo,
-    (RateLimitError, APIError),
-    max_tries=5,
-    max_time=3600,
-    giveup=lambda e: "401" in str(e) or "403" in str(e),
-    on_backoff=lambda details: print(f"Rate limited, waiting {details['elapsed']:.1f}s before retry...")
-)
+def retry_on_rate_limit(max_retries=3, base_delay=1.0, max_delay=30.0):
+    """Decorator for retrying RateLimitError with exponential backoff and jitter."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            global _retry_stats
+            last_exception = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except RateLimitError as e:
+                    last_exception = e
+                    if attempt == max_retries:
+                        _retry_stats["failed_retries"] += 1
+                        print(f"[ERROR] Rate limit retry exhausted after {max_retries} attempts: {e}")
+                        raise
+                    delay = min(base_delay * (2 ** attempt) + uniform(0, 1), max_delay)
+                    _retry_stats["total_retries"] += 1
+                    print(f"[RETRY] Rate limited on attempt {attempt + 1}/{max_retries}, "
+                          f"retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+
+            raise last_exception
+        return wrapper
+    return decorator
+
+
 def chat_completion(messages, tools=None, timeout=120):
     client, model = _get_client_and_model()
     kwargs = {"model": model, "messages": messages, "timeout": timeout}
     if tools:
         kwargs["tools"] = tools
     backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+
+    # Better error logging for debugging (Item 10)
+    print(f"[DEBUG] Using backend: {backend}, model: {model}, timeout: {timeout}s")
+
     with _semaphore_for(backend):
         raw_response = client.chat.completions.with_raw_response.create(**kwargs)
+
     _maybe_wait_for_rate_limit(raw_response)
     return raw_response.parse()
 
 
-def check_backend_health(backend=None) -> bool:
-    """Check if the configured backend is reachable and healthy."""
-    if backend is None:
-        backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
-
-    if backend == "lemonade":
-        try:
-            resp = requests.get(
-                f"{LEMONADE_BASE_URL}/models",
-                timeout=5
-            )
-            return resp.status_code == 200
-        except Exception:
-            return False
-
-    elif backend == "groq":
-        if not os.environ.get("GROQ_API_KEY"):
-            return False
-        try:
-            from openai import OpenAI
-            client = OpenAI(base_url=GROQ_BASE_URL, api_key=os.environ["GROQ_API_KEY"])
-            client.models.list()
-            return True
-        except Exception:
-            return False
-
-    elif backend == "hf":
-        if not os.environ.get("HF_TOKEN"):
-            return False
-        try:
-            from openai import OpenAI
-            client = OpenAI(base_url=HF_BASE_URL, api_key=os.environ["HF_TOKEN"])
-            client.models.list()
-            return True
-        except Exception:
-            return False
-
-    elif backend == "gemini":
-        if not os.environ.get("GEMINI_API_KEY"):
-            return False
-        try:
-            from openai import OpenAI
-            client = OpenAI(base_url=GEMINI_BASE_URL, api_key=os.environ["GEMINI_API_KEY"])
-            client.models.list()
-            return True
-        except Exception:
-            return False
-
-    return False
+def get_retry_stats():
+    """Get retry statistics for monitoring purposes."""
+    return _retry_stats.copy()

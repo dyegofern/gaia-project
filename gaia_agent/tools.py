@@ -106,7 +106,12 @@ def download_gaia_file(task_id: str) -> str:
         except Exception as e:
             return f"ERROR: could not download file for task {task_id}: {e}"
     else:
-        return f"ERROR: could not download file for task {task_id} after {DOWNLOAD_GAIA_FILE_MAX_RETRIES} attempts: {last_error}"
+        return (
+            f"ERROR: Could not download file for task {task_id} after "
+            f"{DOWNLOAD_GAIA_FILE_MAX_RETRIES} attempts. "
+            "The GAIA scoring API may be temporarily unavailable. "
+            "Try running with --continue later."
+        )
 
     content_disp = resp.headers.get("content-disposition", "")
     match = re.search(r'filename="?([^";]+)"?', content_disp)

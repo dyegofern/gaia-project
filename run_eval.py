@@ -2,13 +2,15 @@
 import argparse
 import json
 import os
+import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from gaia_agent.agent import GaiaAgent
+from gaia_agent.agent import GaiaAgent, set_global_db
 from gaia_agent.results_db import DEFAULT_DB_PATH, DONE, ResultsDB
+from gaia_agent.llm import check_backend_health
 
 DEFAULT_WORKERS = 10
 
@@ -24,7 +26,7 @@ def fetch_questions():
 _print_lock = threading.Lock()
 
 
-GIVE_UP_PREFIXES = ("unable to", "cannot determine", "can't determine", "could not", "couldn't", "i cannot", "i can't", "i was unable", "no answer")
+_give_up_prefixes = ("unable to", "cannot determine", "can't determine", "could not", "couldn't", "i cannot", "i can't", "i was unable", "no answer")
 
 
 def _answer_failed(answer):
@@ -32,7 +34,27 @@ def _answer_failed(answer):
     # downloads, not real answers -- keep them retryable via --continue.
     if not answer or not answer.strip() or answer.startswith("AGENT ERROR"):
         return True
-    return answer.strip().lower().startswith(GIVE_UP_PREFIXES)
+    return answer.strip().lower().startswith(_give_up_prefixes)
+
+
+def verify_answer(question: str, answer: str) -> dict:
+    """Basic answer verification heuristics."""
+    verification = {
+        "has_final_answer_marker": "FINAL ANSWER:" in answer,
+        "is_empty": not answer or not answer.strip(),
+        "is_too_long": len(answer) > 500,
+        "contains_error_indicators": any(
+            indicator in answer.lower()
+            for indicator in ["error", "failed", "unable", "cannot", "impossible"]
+        ),
+        "looks_reasonable": len(answer.strip()) > 0 and len(answer.strip()) < 500
+    }
+    # The agent returns the already-extracted answer, so the FINAL ANSWER marker
+    # and error-word heuristics are informational only, not validity criteria.
+    verification["is_valid"] = (
+        not verification["is_empty"] and not verification["is_too_long"]
+    )
+    return verification
 
 
 def run_agent_on_questions(agent, db, run_id, questions, workers=DEFAULT_WORKERS):
@@ -48,23 +70,48 @@ def run_agent_on_questions(agent, db, run_id, questions, workers=DEFAULT_WORKERS
     total = len(valid)
     finished = [0]
 
+    # Use tqdm for progress bar if available, otherwise use simple print
+    try:
+        from tqdm import tqdm
+        use_tqdm = True
+    except ImportError:
+        use_tqdm = False
+
     def work(item):
+        global _global_task_id
         task_id, question_text = item["task_id"], item["question"]
+        _global_task_id = task_id
         db.mark_running(run_id, task_id)
         try:
             answer = agent(question_text, task_id=task_id)
+            # Verify answer
+            verification = verify_answer(question_text, answer)
+            if not verification["is_valid"]:
+                msg = f"  WARNING: Answer verification failed: {verification}"
+                tqdm.write(msg) if use_tqdm else print(msg, flush=True)
+            ok = verification["is_valid"] and not _answer_failed(answer)
         except Exception as e:
             answer = f"AGENT ERROR: {e}"
-        db.save_answer(run_id, task_id, answer, ok=not _answer_failed(answer))
+            ok = False
+        db.save_answer(run_id, task_id, answer, ok=ok)
         with _print_lock:
             finished[0] += 1
-            print(f"\n--- Task {task_id} ({finished[0]}/{total}) ---\n{question_text}\nAnswer: {answer}", flush=True)
+            if use_tqdm:
+                pbar.update(1)
+            msg = f"\n--- Task {task_id} ({finished[0]}/{total}) ---\n{question_text}\nAnswer: {answer}"
+            tqdm.write(msg) if use_tqdm else print(msg, flush=True)
 
     executor = ThreadPoolExecutor(max_workers=workers)
     futures = [executor.submit(work, item) for item in valid]
+
     try:
-        for f in futures:
-            f.result()
+        if use_tqdm:
+            with tqdm(total=len(valid), desc="Running agent", unit="question") as pbar:
+                for f in as_completed(futures):
+                    f.result()
+        else:
+            for f in futures:
+                f.result()
         executor.shutdown()
     except KeyboardInterrupt:
         executor.shutdown(wait=False, cancel_futures=True)
@@ -170,8 +217,78 @@ def main():
         print(json.dumps(outcome, indent=2))
 
 
+def validate_environment():
+    """Validate the runtime environment before starting."""
+    import subprocess
+
+    errors = []
+    warnings = []
+
+    # Check Python interpreter
+    python_bin = os.environ.get("GAIA_PYTHON_EXEC_INTERPRETER", "/home/dyego/rocm10-test/bin/python")
+    if not os.path.exists(python_bin):
+        errors.append(f"Python interpreter not found: {python_bin}")
+
+    # Check required tools
+    required_tools = {
+        "ffmpeg": "ffmpeg",
+        "stockfish": "stockfish"
+    }
+
+    for name, cmd in required_tools.items():
+        try:
+            subprocess.run([cmd, "--version"], capture_output=True, timeout=2)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            warnings.append(f"{name} not found on PATH")
+
+    # Check LEMONADE_SERVER
+    if os.environ.get("GAIA_LLM_BACKEND", "lemonade") == "lemonade":
+        health_ok = check_backend_health("lemonade")
+        if not health_ok:
+            warnings.append("Lemonade Server may not be running")
+
+    # Report
+    if errors:
+        print("=" * 50)
+        print("ENVIRONMENT VALIDATION FAILED")
+        print("=" * 50)
+        for err in errors:
+            print(f"  x {err}")
+        return False
+
+    if warnings:
+        print("=" * 50)
+        print("ENVIRONMENT WARNINGS")
+        print("=" * 50)
+        for warn in warnings:
+            print(f"  ! {warn}")
+        print()
+
+    print("=" * 50)
+    print("ENVIRONMENT VALIDATION PASSED")
+    print("=" * 50)
+    return True
+
+
 def run_and_record(args, db):
+    global _global_task_id
+    _global_task_id = None
+
     backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+
+    # Health check before starting
+    if not check_backend_health(backend):
+        print(f"ERROR: Backend {backend} is unavailable. Please check:")
+        if backend == "lemonade":
+            print("  - Lemonade Server is running on localhost:13305")
+        elif backend == "groq":
+            print("  - GROQ_API_KEY environment variable is set")
+        elif backend == "hf":
+            print("  - HF_TOKEN environment variable is set")
+        elif backend == "gemini":
+            print("  - GEMINI_API_KEY environment variable is set")
+        sys.exit(1)
+
     if args.random:
         resp = requests.get(f"{SCORING_API_URL}/random-question", timeout=15)
         resp.raise_for_status()
@@ -189,6 +306,10 @@ def run_and_record(args, db):
     db.add_questions(run_id, questions)
     todo = db.incomplete(run_id)
     print(f"Run {run_id}: {len(questions)} question(s), {len(todo)} to run with {args.workers} worker(s).")
+
+    # Set global DB for tool instrumentation
+    set_global_db(db, run_id)
+
     run_agent_on_questions(GaiaAgent(), db, run_id, todo, workers=args.workers)
     return run_id
 

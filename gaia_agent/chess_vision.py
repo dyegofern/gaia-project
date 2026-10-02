@@ -7,6 +7,7 @@ TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "data", "chess_piece_tem
 TEMPLATE_SIZE = 48
 PIECE_MASK_THRESHOLD = 40
 EMPTY_SQUARE_MAX_FILL = 0.05
+CONFIDENCE_THRESHOLD = 0.2  # IoU threshold for piece detection
 
 
 def _board_bbox(img: Image.Image):
@@ -71,6 +72,11 @@ def classify_square(square: Image.Image, templates):
         iou = (silhouette & template).sum() / (silhouette | template).sum()
         if iou > best_iou:
             best_type, best_iou = piece_type, iou
+
+    # Reject low-confidence matches
+    if best_iou < CONFIDENCE_THRESHOLD:
+        return None
+
     colour = _piece_colour(square, mask)
     return best_type.upper() if colour == "w" else best_type
 

@@ -23,6 +23,18 @@ CREATE TABLE IF NOT EXISTS results (
     finished_at REAL,
     PRIMARY KEY (run_id, task_id)
 );
+CREATE TABLE IF NOT EXISTS tool_usage (
+    run_id INTEGER NOT NULL REFERENCES runs(run_id),
+    task_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    success BOOLEAN NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    error_message TEXT,
+    PRIMARY KEY (run_id, task_id, tool_name)
+);
+CREATE INDEX IF NOT EXISTS idx_results_run_status ON results(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_results_status ON results(status);
+CREATE INDEX IF NOT EXISTS idx_tool_stats_run ON tool_usage(run_id);
 """
 
 
@@ -34,6 +46,8 @@ class ResultsDB:
         self.path = path
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-64000")
             conn.executescript(_SCHEMA)
 
     @contextlib.contextmanager
@@ -116,3 +130,37 @@ class ResultsDB:
                 (run_id,),
             ).fetchall()
             return {r["status"]: r["n"] for r in rows}
+
+    def record_tool_call(self, run_id, task_id, tool_name, success, duration_ms, error_message=None):
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO tool_usage (run_id, task_id, tool_name, success, duration_ms, error_message) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, task_id, tool_name, success, duration_ms, error_message)
+            )
+
+    def get_tool_stats(self, run_id=None):
+        with self._connect() as conn:
+            if run_id:
+                rows = conn.execute(
+                    """SELECT tool_name,
+                              COUNT(*) as call_count,
+                              SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count,
+                              SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as error_count,
+                              SUM(duration_ms) as total_duration_ms
+                       FROM tool_usage WHERE run_id = ?
+                       GROUP BY tool_name""",
+                    (run_id,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT tool_name,
+                              COUNT(*) as call_count,
+                              SUM(CASE WHEN success THEN 1 ELSE 0 END) as success_count,
+                              SUM(CASE WHEN NOT success THEN 1 ELSE 0 END) as error_count,
+                              SUM(duration_ms) as total_duration_ms
+                       FROM tool_usage
+                       GROUP BY tool_name
+                       ORDER BY call_count DESC"""
+                ).fetchall()
+            return [dict(r) for r in rows]
