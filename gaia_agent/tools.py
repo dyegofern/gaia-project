@@ -45,11 +45,18 @@ WEB_SEARCH_SCHEMA = {
 
 
 MAX_PAGE_CHARS = 30000
+# Many sites (fandom, adsabs, BHL) reject a bare "Mozilla/5.0" UA with 403/405.
+BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 def fetch_page(url: str) -> str:
     try:
-        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=15, headers=BROWSER_HEADERS)
         resp.raise_for_status()
     except Exception as e:
         return f"ERROR: could not fetch {url}: {e}"

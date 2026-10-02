@@ -151,3 +151,37 @@ def test_agent_saves_transcript_and_hints_attachment(db):
     assert t["answer"] == "4"
     assert t["messages"][0]["role"] == "user" and "no file is attached" in t["messages"][0]["content"]
     assert t["messages"][-1] == {"role": "assistant", "content": "FINAL ANSWER: 4"}
+
+
+def _reply(content):
+    r = MagicMock()
+    r.choices = [MagicMock(message=MagicMock(tool_calls=None, content=content))]
+    return r
+
+
+def test_prose_answer_is_reformatted_into_final_answer_line():
+    prose = 'Based on the transcription, Teal\'c responds with: **"Extremely."**'
+    with patch.object(agent_mod, "chat_completion", side_effect=[_reply(prose), _reply("FINAL ANSWER: Extremely")]) as cc:
+        assert agent_mod.GaiaAgent()("What does Teal'c say?") == "Extremely"
+    assert cc.call_count == 2
+
+
+def test_prose_answer_is_kept_if_reformat_fails():
+    from openai import APIError
+    prose = "The answer is 4."
+    with patch.object(agent_mod, "chat_completion", side_effect=[_reply(prose), APIError("x", request=MagicMock(), body=None)]):
+        assert agent_mod.GaiaAgent()("2+2?") == prose
+
+
+def test_marked_answer_needs_no_extra_call():
+    with patch.object(agent_mod, "chat_completion", return_value=_reply("FINAL ANSWER: 4")) as cc:
+        agent_mod.GaiaAgent()("2+2?")
+    assert cc.call_count == 1
+
+
+@pytest.mark.parametrize("answer", [
+    "I attempted to access the attached audio file, but the file download failed.",
+    "Sorry, I cannot access the spreadsheet.",
+])
+def test_attachment_failure_prose_is_flagged_as_failed(answer):
+    assert _answer_failed(answer)

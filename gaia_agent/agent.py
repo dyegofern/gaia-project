@@ -36,6 +36,11 @@ for questions about dialogue/speech, or analyze_youtube_frames for questions abo
 content (objects, people, counts) -- only use analyze_youtube_frames if actually needed,
 since it is much slower.
 
+If download_gaia_file returns an ERROR, the attachment is unavailable: do NOT guess file
+paths or call read_file/transcribe_audio/analyze_image on invented names. Reply with
+FINAL ANSWER: Unable to access the attached file (unless the question can be answered
+fully without the file).
+
 Never search the web for the task_id itself or for "GAIA benchmark answer" or similar --
 answer keys or discussions of this exact question may be indexed online, but using them
 would not be a genuine answer. Always derive the answer yourself from the question's own
@@ -141,7 +146,9 @@ TOOL_FUNCTIONS = {
 }
 
 
-MAX_ITERATIONS = 10
+# Multi-hop research questions routinely need more than 10 lookups (observed:
+# a question exhausted all 10 on near-duplicate searches and then guessed).
+MAX_ITERATIONS = 14
 
 
 # run_eval stops dispatching further questions when an answer starts with this.
@@ -356,6 +363,7 @@ class GaiaAgent:
 
             last_content = message.content or ""
             messages.append({"role": "assistant", "content": last_content})
+            last_content = self._ensure_final_answer_line(messages, last_content)
             stopped_early = True
             break
 
@@ -413,6 +421,27 @@ class GaiaAgent:
             return func(**args)
         except Exception as e:
             return f"ERROR: tool {name} raised an exception: {e}"
+
+    @staticmethod
+    def _ensure_final_answer_line(messages, content):
+        """The model sometimes answers in prose ("Based on the transcript, Teal'c
+        says ...") without the required FINAL ANSWER line, which would be stored
+        and scored verbatim. Ask once for just the answer; keep the original
+        content if that fails."""
+        if "FINAL ANSWER:" in content or not content.strip() or _parse_informal_tool_call(content):
+            return content
+        messages.append({
+            "role": "user",
+            "content": "Reply with only your final answer, in exactly this form: FINAL ANSWER: <answer>",
+        })
+        try:
+            reply = chat_completion(messages, tools=None).choices[0].message.content or ""
+        except APIError:
+            return content
+        if "FINAL ANSWER:" not in reply:
+            return content
+        messages.append({"role": "assistant", "content": reply})
+        return reply
 
     def _extract_final_answer(self, content: str) -> str:
         marker = "FINAL ANSWER:"

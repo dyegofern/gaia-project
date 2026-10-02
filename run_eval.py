@@ -29,13 +29,17 @@ _print_lock = threading.Lock()
 _give_up_prefixes = ("unable to", "cannot determine", "can't determine", "could not", "couldn't", "i cannot", "i can't", "i was unable", "i am unable", "i'm unable", "i'm not able", "i am not able", "no answer", "data not available", "not available", "insufficient information")
 
 
+_give_up_phrases = ("unable to access", "unable to retrieve", "unable to download", "could not access", "couldn't access",
+                    "cannot access", "can't access", "attempted to access", "download failed", "file download")
+
+
 def _answer_failed(answer):
     # "Unable to access audio file"-style answers come from flaky attachment
     # downloads, not real answers -- keep them retryable via --continue.
     if not answer or not answer.strip() or answer.startswith("AGENT ERROR"):
         return True
     normalized = answer.strip().lower().replace("\u2019", "'").replace("\u2018", "'")
-    return normalized.startswith(_give_up_prefixes)
+    return normalized.startswith(_give_up_prefixes) or any(p in normalized for p in _give_up_phrases)
 
 
 def verify_answer(question: str, answer: str) -> dict:
