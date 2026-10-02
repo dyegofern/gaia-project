@@ -453,11 +453,16 @@ def analyze_image(path: str, question: str = "", thinking: bool = True, max_toke
         # Vision inference on this local model has been observed to take
         # 60-90s+ even for moderate prompts; the default 120s timeout isn't
         # enough headroom for more detailed/structured analysis requests.
-        if thinking or os.environ.get("GAIA_LLM_BACKEND", "lemonade") != "lemonade":
-            response = chat_completion(messages, timeout=240)
+        # GAIA_VISION_BACKEND (e.g. "gemini") sends image analysis to a stronger
+        # vision model than the local one; unset means use the main backend.
+        backend = os.environ.get("GAIA_VISION_BACKEND") or os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+        if backend != "lemonade":
+            response = chat_completion(messages, timeout=240, backend=backend)
+        elif thinking:
+            response = chat_completion(messages, timeout=240, backend=backend)
         else:
             response = chat_completion(messages, timeout=120, max_tokens=max_tokens,
-                                       extra_body=NO_THINKING_BODY)
+                                       extra_body=NO_THINKING_BODY, backend=backend)
     except Exception as e:
         return f"ERROR: could not analyze image {path}: {e}"
     return response.choices[0].message.content or ""

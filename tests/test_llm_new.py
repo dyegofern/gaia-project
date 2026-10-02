@@ -229,3 +229,12 @@ class TestProbeAndTimeouts:
         assert _default_timeout("lemonade") > _default_timeout("groq")
         monkeypatch.setenv("GAIA_LLM_TIMEOUT", "42")
         assert _default_timeout("groq") == 42
+
+
+def test_404_model_not_found_is_fatal_not_retried():
+    from openai import APIStatusError
+    from gaia_agent.llm import is_fatal_backend_error
+    resp = MagicMock(); resp.request = MagicMock(); resp.status_code = 404
+    e = APIStatusError("models/x is no longer available", response=resp, body=None)
+    assert is_fatal_backend_error(e)
+    assert "not found" in _format_api_error(e)

@@ -78,8 +78,8 @@ def _build_backend(backend):
     return client, LEMONADE_MODEL
 
 
-def _get_client_and_model():
-    backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+def _get_client_and_model(backend=None):
+    backend = backend or os.environ.get("GAIA_LLM_BACKEND", "lemonade")
 
     if backend == "hf" and not os.environ.get("HF_TOKEN"):
         # Never serve a cached client for a token-less request: the token
@@ -190,7 +190,7 @@ def _semaphore_for(backend):
 
 # Auth/billing failures are deterministic: retrying (or running the rest of
 # the questions) can't help, so callers should stop and report them.
-FATAL_STATUS_CODES = (401, 402, 403)
+FATAL_STATUS_CODES = (401, 402, 403, 404)  # 404: model/endpoint does not exist
 
 
 def is_fatal_backend_error(e) -> bool:
@@ -221,9 +221,9 @@ def _giveup(e):
     giveup=_giveup,
     on_backoff=lambda details: print(f"Rate limited, waiting {details['elapsed']:.1f}s before retry...")
 )
-def chat_completion(messages, tools=None, timeout=None, max_tokens=None, extra_body=None):
-    client, model = _get_client_and_model()
-    backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+def chat_completion(messages, tools=None, timeout=None, max_tokens=None, extra_body=None, backend=None):
+    backend = backend or os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+    client, model = _get_client_and_model(backend)
     kwargs = {"model": model, "messages": messages,
               "timeout": timeout if timeout is not None else _default_timeout(backend)}
     if tools:
@@ -264,7 +264,7 @@ def probe_backend(backend=None, timeout=None):
         return False, "request timed out" + (" (the model may still be loading)" if backend == "lemonade" else "")
     except APIError as e:
         if is_fatal_backend_error(e):
-            hint = {401: "API key rejected", 402: "credits/quota exhausted", 403: "access forbidden"}[e.status_code]
+            hint = {401: "API key rejected", 402: "credits/quota exhausted", 403: "access forbidden", 404: "model or endpoint not found"}[e.status_code]
             return False, f"{hint} (HTTP {e.status_code}): {str(getattr(e, 'message', e))[:200]}"
         return False, f"{type(e).__name__}: {str(e)[:200]}"
     except Exception as e:

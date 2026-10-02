@@ -173,6 +173,7 @@ def _format_api_error(e: APIError) -> str:
             401: "the API key was rejected",
             402: "the account's credits/quota are exhausted",
             403: "access is forbidden for this key",
+            404: "the model or endpoint was not found (check the model name)",
         }[e.status_code]
         return f"{BACKEND_FATAL_PREFIX} - {hint}. {_detail(e)}"
     if isinstance(e, RateLimitError):
