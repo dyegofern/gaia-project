@@ -6,7 +6,7 @@ import cors from 'cors';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, readFileSync } from 'fs';
 import http from 'http';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -133,6 +133,52 @@ function dbRun(sql, params = []) {
   }
 }
 
+// Read-only queries against the agent's own SQLite DB (gaia_runs.db).
+// The DB is tiny and written by a separate Python process, so load a fresh
+// copy per query instead of holding a stale in-memory snapshot.
+function gaiaQuery(sql, params = []) {
+  if (!SQL || !existsSync(GAIA_DB_PATH)) return [];
+  let db;
+  try {
+    db = new SQL.Database(readFileSync(GAIA_DB_PATH));
+    const stmt = db.prepare(sql);
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    stmt.free();
+    return rows;
+  } catch (e) {
+    console.error('GAIA DB query error:', e.message);
+    return [];
+  } finally {
+    if (db) db.close();
+  }
+}
+
+// One row per run, shaped like what the dashboard expects.
+const RUNS_SQL = `
+  SELECT
+    r.run_id,
+    r.backend,
+    r.started_at,
+    COUNT(x.task_id) AS total_questions,
+    COALESCE(SUM(x.status = 'done'), 0) AS completed,
+    COALESCE(SUM(x.status = 'error'), 0) AS failed,
+    CASE
+      WHEN COALESCE(SUM(x.status = 'running'), 0) > 0 THEN 'running'
+      WHEN COALESCE(SUM(x.status = 'pending'), 0) > 0 THEN 'pending'
+      WHEN COALESCE(SUM(x.status = 'error'), 0) > 0 THEN 'failed'
+      ELSE 'completed'
+    END AS status,
+    MAX(x.finished_at) AS last_activity,
+    CASE WHEN COUNT(x.task_id) > 0
+      THEN COALESCE(SUM(x.status = 'done'), 0) * 100.0 / COUNT(x.task_id)
+      ELSE 0 END AS progress_pct
+  FROM runs r
+  LEFT JOIN results x ON x.run_id = r.run_id
+  GROUP BY r.run_id
+`;
+
 // API Routes
 
 app.get('/api/status', async (req, res) => {
@@ -143,9 +189,9 @@ app.get('/api/status', async (req, res) => {
       health[backend] = await checkBackendHealth(backend);
     }
 
-    const latestRun = dbQuery('SELECT * FROM run_history ORDER BY started_at DESC LIMIT 1')[0] || null;
-    const recentRuns = dbQuery('SELECT * FROM run_history ORDER BY started_at DESC LIMIT 10');
-    const totalRunsRow = dbQuery('SELECT COUNT(*) as count FROM run_history')[0];
+    const latestRun = gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC LIMIT 1')[0] || null;
+    const recentRuns = gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC LIMIT 10');
+    const totalRunsRow = gaiaQuery('SELECT COUNT(*) AS count FROM runs')[0];
 
     res.json({
       health,
@@ -161,15 +207,21 @@ app.get('/api/status', async (req, res) => {
 
 app.get('/api/run/:runId', (req, res) => {
   try {
-    const runs = dbQuery('SELECT * FROM run_history WHERE run_id = ?', [req.params.runId]);
-    const run = runs[0] || null;
-
+    const id = Number.parseInt(req.params.runId, 10);
+    const run = gaiaQuery(`SELECT * FROM (${RUNS_SQL}) WHERE run_id = ?`, [id])[0] || null;
     if (!run) {
       return res.status(404).json({ error: 'Run not found' });
     }
-
-    const toolStats = dbQuery('SELECT * FROM tool_stats WHERE run_id = ?', [req.params.runId]);
-    res.json({ run, toolStats });
+    const questions = gaiaQuery(
+      'SELECT task_id, status, question, answer FROM results WHERE run_id = ? ORDER BY rowid', [id]);
+    const tools = gaiaQuery(`
+      SELECT tool_name,
+             COUNT(*) AS call_count,
+             SUM(success) AS success_count,
+             COUNT(*) - SUM(success) AS error_count,
+             SUM(duration_ms) AS total_duration_ms
+      FROM tool_usage WHERE run_id = ? GROUP BY tool_name ORDER BY call_count DESC`, [id]);
+    res.json({ run, questions, tools });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -177,18 +229,17 @@ app.get('/api/run/:runId', (req, res) => {
 
 app.get('/api/tool-stats', (req, res) => {
   try {
-    const rows = dbQuery(`
+    res.json(gaiaQuery(`
       SELECT
         tool_name,
-        SUM(call_count) as total_calls,
-        SUM(success_count) as total_success,
-        SUM(error_count) as total_errors,
-        SUM(total_duration_ms) as total_duration_ms
-      FROM tool_stats
+        COUNT(*) AS total_calls,
+        SUM(success) AS total_success,
+        COUNT(*) - SUM(success) AS total_errors,
+        SUM(duration_ms) AS total_duration_ms
+      FROM tool_usage
       GROUP BY tool_name
       ORDER BY total_calls DESC
-    `);
-    res.json(rows);
+    `));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -196,22 +247,7 @@ app.get('/api/tool-stats', (req, res) => {
 
 app.get('/api/run-progress', (req, res) => {
   try {
-    const rows = dbQuery(`
-      SELECT
-        run_id,
-        total_questions,
-        completed,
-        failed,
-        status,
-        started_at,
-        CASE
-          WHEN total_questions > 0 THEN (completed * 100.0 / total_questions)
-          ELSE 0
-        END as progress_pct
-      FROM run_history
-      ORDER BY started_at DESC
-    `);
-    res.json(rows);
+    res.json(gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC'));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -335,6 +371,19 @@ app.get('/api/environment', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// The agent runs in separate processes, so watch the DB file and tell
+// connected clients to refresh whenever it changes.
+let lastDbMtime = 0;
+setInterval(() => {
+  try {
+    const m = statSync(GAIA_DB_PATH).mtimeMs;
+    if (m !== lastDbMtime) {
+      lastDbMtime = m;
+      io.emit('run-progress', 'database updated');
+    }
+  } catch { /* DB not created yet */ }
+}, 2000);
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {

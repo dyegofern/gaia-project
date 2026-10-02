@@ -57,6 +57,9 @@
 
     .status-badge.healthy { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
     .status-badge.unhealthy { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
+    .status-badge.running { background: rgba(88, 166, 255, 0.2); color: var(--accent-blue, #58a6ff); }
+    .status-badge.completed { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
+    .status-badge.failed { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
     .status-badge.pending { background: rgba(210, 153, 34, 0.2); color: var(--accent-yellow); }
 
     .grid {
@@ -628,9 +631,7 @@
     checkEnvironment();
 
     // Periodic log check (simulate)
-    setInterval(() => {
-      // This would be enhanced to actually check for new log entries
-    }, 5000);
+    setInterval(refreshStatus, 5000);
   </script>
 </body>
 </html>
