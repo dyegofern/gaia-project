@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS transcripts (
     saved_at REAL NOT NULL,
     PRIMARY KEY (run_id, task_id)
 );
+CREATE TABLE IF NOT EXISTS submissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(run_id),
+    username TEXT NOT NULL,
+    agent_code TEXT NOT NULL,
+    score REAL,
+    correct_count INTEGER,
+    total_attempted INTEGER,
+    message TEXT,
+    submitted_at REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_results_run_status ON results(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_results_status ON results(status);
 CREATE INDEX IF NOT EXISTS idx_tool_stats_run ON tool_usage(run_id);
@@ -129,6 +140,23 @@ class ResultsDB:
         if row is None:
             return None
         return {"messages": json.loads(row["messages"]), "answer": row["answer"], "saved_at": row["saved_at"]}
+
+    def save_submission(self, run_id, username, agent_code, outcome):
+        """Remember what the leaderboard replied, so scores show next to runs."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO submissions (run_id, username, agent_code, score, correct_count, total_attempted, message, submitted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, username, agent_code, outcome.get("score"), outcome.get("correct_count"),
+                 outcome.get("total_attempted"), outcome.get("message"), time.time()))
+
+    def submissions(self, run_id=None):
+        with self._connect() as conn:
+            if run_id is None:
+                rows = conn.execute("SELECT * FROM submissions ORDER BY id DESC").fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM submissions WHERE run_id = ? ORDER BY id DESC", (run_id,)).fetchall()
+        return [dict(r) for r in rows]
 
     def latest_run_id(self):
         with self._connect() as conn:

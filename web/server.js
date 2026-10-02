@@ -163,6 +163,8 @@ const RUNS_SQL = `
     r.started_at,
     r.pid,
     r.log_path,
+    (SELECT s.score FROM submissions s WHERE s.run_id = r.run_id ORDER BY s.id DESC LIMIT 1) AS score,
+    (SELECT s.correct_count || '/' || s.total_attempted FROM submissions s WHERE s.run_id = r.run_id ORDER BY s.id DESC LIMIT 1) AS score_detail,
     COUNT(x.task_id) AS total_questions,
     COALESCE(SUM(x.status = 'done'), 0) AS completed,
     COALESCE(SUM(x.status = 'error'), 0) AS failed,
@@ -205,6 +207,11 @@ function isRunEvalProcess(pid) {
     return false;
   }
 }
+
+// The agent side owns the schema; open it once at startup so newly added
+// tables (e.g. submissions) exist before the dashboard queries them.
+execFile('/home/dyego/rocm10-test/bin/python', ['-c', 'from gaia_agent.results_db import ResultsDB; ResultsDB()'],
+  { cwd: join(__dirname, '..') }, (error) => { if (error) console.error('Schema check failed:', error.message); });
 
 // A run whose process is gone but which still has unfinished questions is
 // "interrupted" (crashed, killed, or cancelled) rather than "running".
@@ -270,7 +277,8 @@ app.get('/api/run/:runId', (req, res) => {
              COUNT(*) - SUM(success) AS error_count,
              SUM(duration_ms) AS total_duration_ms
       FROM tool_usage WHERE run_id = ? GROUP BY tool_name ORDER BY call_count DESC`, [id]);
-    res.json({ run, questions, tools });
+    const submissions = gaiaQuery('SELECT username, agent_code, score, correct_count, total_attempted, message, submitted_at FROM submissions WHERE run_id = ? ORDER BY id DESC', [id]);
+    res.json({ run, questions, tools, submissions });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -311,6 +319,68 @@ app.get('/api/run/:runId/task/:taskId', (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+const PYTHON_BIN = '/home/dyego/rocm10-test/bin/python';
+
+app.get('/api/submit-defaults', (req, res) => {
+  const last = gaiaQuery('SELECT username, agent_code FROM submissions ORDER BY id DESC LIMIT 1')[0] || {};
+  res.json({ username: last.username || process.env.GAIA_SUBMIT_USERNAME || '',
+             agent_code: last.agent_code || process.env.GAIA_AGENT_CODE || '' });
+});
+
+// What would be sent: the answered tasks, after the same cleaning submit() applies.
+app.get('/api/run/:runId/submit-preview', (req, res) => {
+  const id = Number.parseInt(req.params.runId, 10);
+  const code = [
+    'import json, sys',
+    'from gaia_agent.answers import clean_answer',
+    'from gaia_agent.results_db import ResultsDB',
+    'rows = ResultsDB().results(int(sys.argv[1]))',
+    'done = [r for r in rows if r["status"] == "done"]',
+    'print(json.dumps({"total": len(rows), "answers": [{"task_id": r["task_id"], "question": r["question"][:90], "answer": r["answer"], "cleaned": clean_answer(r["answer"])} for r in done]}))',
+  ].join('\n');
+  execFile(PYTHON_BIN, ['-c', code, String(id)], { cwd: join(__dirname, '..'), timeout: 30000 }, (error, stdout) => {
+    if (error) return res.status(500).json({ error: error.message });
+    try {
+      const data = JSON.parse(stdout.trim().split('\n').pop());
+      const run = withLiveness(gaiaQuery(`SELECT * FROM (${RUNS_SQL}) WHERE run_id = ?`, [id])[0]);
+      res.json({ ...data, unanswered: data.total - data.answers.length, alive: run ? run.alive : null,
+                 previous: gaiaQuery('SELECT username, score, correct_count, total_attempted, submitted_at FROM submissions WHERE run_id = ? ORDER BY id DESC', [id]) });
+    } catch {
+      res.status(500).json({ error: 'Unreadable preview output' });
+    }
+  });
+});
+
+// Public leaderboard submission: needs an explicit confirm flag, refuses a run
+// that is still executing, and refuses partial runs unless told otherwise.
+app.post('/api/run/:runId/submit', (req, res) => {
+  const id = Number.parseInt(req.params.runId, 10);
+  const { username, agent_code, confirm, allowPartial } = req.body || {};
+  if (confirm !== true) return res.status(400).json({ error: 'Submission must be explicitly confirmed.' });
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(username || '')) return res.status(400).json({ error: 'Invalid Hugging Face username.' });
+  if (!/^https?:\/\/[^\s]{3,300}$/.test(agent_code || '')) return res.status(400).json({ error: 'Agent code must be an http(s) URL.' });
+  const run = withLiveness(gaiaQuery(`SELECT * FROM (${RUNS_SQL}) WHERE run_id = ?`, [id])[0]);
+  if (!run) return res.status(404).json({ error: 'Run not found' });
+  if (run.alive) return res.status(409).json({ error: 'This run is still executing; wait for it to finish.' });
+  if (run.completed === 0) return res.status(409).json({ error: 'This run has no answered questions.' });
+  if (run.completed < run.total_questions && allowPartial !== true) {
+    return res.status(409).json({ error: `Only ${run.completed} of ${run.total_questions} questions are answered; confirm partial submission to continue.` });
+  }
+  execFile(PYTHON_BIN, [join(__dirname, '..', 'run_eval.py'), '--from-db', '--run-id', String(id),
+    '--submit', '--username', username, '--agent-code', agent_code],
+    { cwd: join(__dirname, '..'), timeout: 120000 }, (error, stdout, stderr) => {
+      const marker = '=== Submission Result ===';
+      if (error || !stdout.includes(marker)) {
+        return res.status(502).json({ error: ((stderr || error?.message || 'Submission failed').trim().split('\n').slice(-4).join(' | ')).slice(0, 500) });
+      }
+      try {
+        res.json({ success: true, result: JSON.parse(stdout.split(marker)[1]) });
+      } catch {
+        res.status(502).json({ error: 'Submitted, but the response could not be read.', raw: stdout.slice(-300) });
+      }
+    });
 });
 
 app.post('/api/run/:runId/cancel', (req, res) => {

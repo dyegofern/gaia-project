@@ -213,6 +213,7 @@ def main():
     parser.add_argument("--from-file", help="Submit previously-saved results from a run_eval.py output file instead of running the agent again")
     args = parser.parse_args()
 
+    run_id = None
     if args.from_file:
         if not args.submit:
             parser.error("--from-file requires --submit")
@@ -238,6 +239,8 @@ def main():
         outcome = submit(args.username, args.agent_code, results)
         print("\n=== Submission Result ===")
         print(json.dumps(outcome, indent=2))
+        if run_id is not None:
+            db.save_submission(run_id, args.username, args.agent_code, outcome)
 
 
 def validate_environment():

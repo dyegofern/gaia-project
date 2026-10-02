@@ -219,3 +219,11 @@ def test_youtube_download_retries_transient_failures(monkeypatch):
     monkeypatch.setattr(tools.time, "sleep", lambda s: None)
     assert tools._download_youtube_video("https://y/1")[0] == "/tmp/v.webm"
     assert len(calls) == 3
+
+
+def test_submission_is_recorded_per_run(db):
+    run = db.create_run("lemonade")
+    db.save_submission(run, "u", "http://code", {"score": 90.0, "correct_count": 18, "total_attempted": 20, "message": "ok"})
+    [s] = db.submissions(run)
+    assert (s["username"], s["score"], s["correct_count"]) == ("u", 90.0, 18)
+    assert db.submissions(run + 1) == [] and len(db.submissions()) == 1

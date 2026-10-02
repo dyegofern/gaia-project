@@ -417,11 +417,12 @@
             <th>Started</th>
             <th>Status</th>
             <th>Progress</th>
+            <th>Score</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="runsBody">
-          <tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">Loading...</td></tr>
+          <tr><td colspan="7" style="text-align: center; color: var(--text-secondary);">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -523,6 +524,7 @@
                   </div>
                 </div>
               </td>
+              <td>${run.score != null ? `<strong>${esc(Number(run.score).toFixed(1))}%</strong> <span style="color: var(--text-secondary); font-size: 11px;">(${esc(run.score_detail)})</span>` : '-'}</td>
               <td>
                 <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="viewRun(${run.run_id})">
                   View
@@ -532,7 +534,7 @@
             </tr>
           `).join('');
         } else {
-          document.getElementById('runsBody').innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">No runs yet</td></tr>';
+          document.getElementById('runsBody').innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-secondary);">No runs yet</td></tr>';
         }
 
         startRefreshTimer();
@@ -655,7 +657,10 @@
       return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
+    let submitPanelOpen = false;
+
     async function viewRun(runId, isRefresh = false) {
+      if (isRefresh && submitPanelOpen) return; // keep the half-filled submit form
       selectedRunId = runId;
       try {
         const res = await fetch(`/api/run/${runId}`);
@@ -700,6 +705,12 @@
               ${data.tools.map(t => `<tr><td>${esc(t.tool_name)}</td><td>${esc(t.call_count)}</td><td>${esc(t.success_count)}</td><td>${esc(t.error_count)}</td></tr>`).join('') || '<tr><td colspan="4">No tool stats</td></tr>'}
             </tbody>
           </table>
+
+          <h4 style="margin-top: 20px;">Leaderboard</h4>
+          <div id="submitSection">
+            ${(data.submissions || []).map(x => `<p style="font-size: 12px;">Submitted as <strong>${esc(x.username)}</strong> on ${esc(formatDate(x.submitted_at))}: <strong>${esc(x.score)}%</strong> (${esc(x.correct_count)}/${esc(x.total_attempted)})</p>`).join('')}
+            <button class="btn btn-success" onclick="openSubmit(${runId})">Submit to leaderboard…</button>
+          </div>
 
           <h4 style="margin-top: 20px;">Run log <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="loadRunLog(${runId})">Refresh</button></h4>
           <pre class="logbox" id="runLog">Loading...</pre>
@@ -804,7 +815,76 @@
       }
     }
 
+    async function openSubmit(runId) {
+      const box = document.getElementById('submitSection');
+      box.innerHTML = 'Loading preview...';
+      submitPanelOpen = true;
+      try {
+        const [pv, df] = await Promise.all([
+          fetch(`/api/run/${runId}/submit-preview`).then(r => r.json()),
+          fetch('/api/submit-defaults').then(r => r.json()),
+        ]);
+        if (pv.error) throw new Error(pv.error);
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem('submitFields') || '{}'); } catch { /* ignore */ }
+        const rows = pv.answers.map(a => `<tr><td title="${esc(a.question)}">${esc(a.task_id.slice(0, 8))}</td><td>${esc(a.cleaned)}${a.cleaned !== a.answer ? ` <span style="color: var(--accent-yellow); font-size: 10px;" title="was: ${esc(a.answer)}">(cleaned)</span>` : ''}</td></tr>`).join('');
+        const warn = pv.alive ? '<p style="color: var(--accent-red);">This run is still executing. Wait for it to finish before submitting.</p>' : '';
+        const prev = pv.previous.length ? `<p style="font-size: 12px; color: var(--text-secondary);">Already submitted ${pv.previous.length}× (latest ${esc(pv.previous[0].score)}%). A new submission can only raise your leaderboard score.</p>` : '';
+        const input = 'padding: 8px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-primary); width: 100%; margin: 4px 0 10px;';
+        box.innerHTML = `
+          <div class="card" style="margin-top: 10px;">
+            <p><strong>${pv.answers.length}</strong> answered question(s) will be sent${pv.unanswered ? `, <strong style="color: var(--accent-yellow);">${pv.unanswered} unanswered will be left out</strong>` : ''}.</p>
+            ${prev}${warn}
+            <details><summary style="cursor: pointer;">Show the exact answers that will be submitted</summary>
+              <table style="margin-top: 8px;"><thead><tr><th>Task</th><th>Submitted answer</th></tr></thead><tbody>${rows}</tbody></table>
+            </details>
+            <label style="font-size: 12px;">Hugging Face username</label>
+            <input id="submitUser" style="${input}" value="${esc(saved.username || df.username)}">
+            <label style="font-size: 12px;">Agent code URL (public)</label>
+            <input id="submitCode" style="${input}" value="${esc(saved.agent_code || df.agent_code)}">
+            ${pv.unanswered ? '<label style="display:block; margin-bottom: 8px;"><input type="checkbox" id="submitPartial"> Submit anyway without the unanswered question(s)</label>' : ''}
+            <label style="display:block; margin-bottom: 12px;"><input type="checkbox" id="submitConfirm" onchange="document.getElementById('submitGo').disabled = !this.checked || ${pv.alive ? 'true' : 'false'}"> I confirm: send these answers to the public leaderboard</label>
+            <button class="btn btn-success" id="submitGo" disabled onclick="doSubmit(${runId})">Submit</button>
+            <button class="btn btn-secondary" onclick="submitPanelOpen = false; viewRun(${runId});">Cancel</button>
+            <div id="submitResult" style="margin-top: 12px;"></div>
+          </div>`;
+      } catch (e) {
+        box.innerHTML = `<p style="color: var(--accent-red);">Could not prepare the submission: ${esc(e.message)}</p><button class="btn btn-secondary" onclick="submitPanelOpen = false; viewRun(${runId});">Back</button>`;
+      }
+    }
+
+    async function doSubmit(runId) {
+      const out = document.getElementById('submitResult');
+      const body = {
+        username: document.getElementById('submitUser').value.trim(),
+        agent_code: document.getElementById('submitCode').value.trim(),
+        confirm: document.getElementById('submitConfirm').checked,
+        allowPartial: !!document.getElementById('submitPartial')?.checked,
+      };
+      document.getElementById('submitGo').disabled = true;
+      out.textContent = 'Submitting...';
+      try {
+        const res = await fetch(`/api/run/${runId}/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          out.innerHTML = `<span style="color: var(--accent-red);">${esc(data.error || 'Submission failed')}</span>`;
+          document.getElementById('submitGo').disabled = false;
+          return;
+        }
+        try { localStorage.setItem('submitFields', JSON.stringify({ username: body.username, agent_code: body.agent_code })); } catch { /* ignore */ }
+        const r = data.result;
+        out.innerHTML = `<div class="card"><h3 style="color: var(--accent-green);">Score: ${esc(r.score)}% (${esc(r.correct_count)}/${esc(r.total_attempted)})</h3><p style="font-size: 12px;">${esc(r.message)}</p></div>`;
+        addLog('info', `Run #${runId} submitted: ${r.score}% (${r.correct_count}/${r.total_attempted})`);
+        submitPanelOpen = false;
+        refreshStatus();
+      } catch (e) {
+        out.innerHTML = `<span style="color: var(--accent-red);">${esc(e.message)}</span>`;
+        document.getElementById('submitGo').disabled = false;
+      }
+    }
+
     function closeDetails() {
+      submitPanelOpen = false;
       openTaskId = null;
       selectedRunId = null;
       document.getElementById('detailsModal').classList.remove('show');
