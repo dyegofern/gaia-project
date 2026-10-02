@@ -5,6 +5,7 @@ import functools
 import contextvars
 from openai import APIError, RateLimitError, BadRequestError
 
+from gaia_agent.answers import clean_answer
 from gaia_agent.llm import chat_completion, is_fatal_backend_error
 from gaia_agent.tools import (
     web_search, WEB_SEARCH_SCHEMA,
@@ -461,4 +462,4 @@ class GaiaAgent:
         # Last-resort safety net: never surface a leaked, unexecuted
         # informal tool call as if it were an answer, however it got here.
         content = INFORMAL_TOOL_CALL_RE.sub("", content)
-        return content.strip() or "AGENT ERROR: model produced no usable answer"
+        return clean_answer(content.strip()) or "AGENT ERROR: model produced no usable answer"

@@ -170,7 +170,7 @@ def test_prose_answer_is_kept_if_reformat_fails():
     from openai import APIError
     prose = "The answer is 4."
     with patch.object(agent_mod, "chat_completion", side_effect=[_reply(prose), APIError("x", request=MagicMock(), body=None)]):
-        assert agent_mod.GaiaAgent()("2+2?") == prose
+        assert agent_mod.GaiaAgent()("2+2?") == "The answer is 4"  # kept (not reformatted), trailing period cleaned
 
 
 def test_marked_answer_needs_no_extra_call():

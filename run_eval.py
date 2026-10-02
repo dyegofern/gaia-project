@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+from gaia_agent.answers import clean_answer
 from gaia_agent.agent import BACKEND_FATAL_PREFIX, GaiaAgent, set_global_db
 from gaia_agent.results_db import DEFAULT_DB_PATH, DONE, ResultsDB
 from gaia_agent.llm import check_backend_health, probe_backend
@@ -137,7 +138,7 @@ def run_agent_on_questions(agent, db, run_id, questions, workers=DEFAULT_WORKERS
 def export_results(results, path=None):
     lines = ["=== Results ==="]
     for r in results:
-        lines.append(json.dumps({"task_id": r["task_id"], "submitted_answer": r["answer"]}, indent=2))
+        lines.append(json.dumps({"task_id": r["task_id"], "submitted_answer": clean_answer(r["answer"])}, indent=2))
     text = "\n".join(lines) + "\n"
     if path:
         with open(path, "w") as f:
@@ -183,6 +184,7 @@ def load_results_from_file(path):
 
 
 def submit(username, agent_code, answers):
+    answers = [{**a, "submitted_answer": clean_answer(a["submitted_answer"])} for a in answers]
     payload = {"username": username, "agent_code": agent_code, "answers": answers}
     resp = requests.post(f"{SCORING_API_URL}/submit", json=payload, timeout=60)
     resp.raise_for_status()
@@ -228,7 +230,7 @@ def main():
         print(f"\nRun {run_id}: {db.summary(run_id)}")
         if args.export or not args.from_db:
             export_results(answered, args.export)
-        results = [{"task_id": r["task_id"], "submitted_answer": r["answer"]} for r in answered]
+        results = [{"task_id": r["task_id"], "submitted_answer": clean_answer(r["answer"])} for r in answered]
 
     if args.submit:
         if not args.username or not args.agent_code:
