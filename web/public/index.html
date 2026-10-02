@@ -240,6 +240,17 @@
       color: var(--text-secondary);
     }
 
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      background: rgba(1, 4, 9, 0.75); padding: 40px 20px; overflow-y: auto;
+    }
+    .modal-backdrop.show { display: block; }
+    .modal-box {
+      max-width: 1000px; margin: 0 auto; padding: 24px;
+      background: var(--bg-secondary, #161b22); border: 1px solid var(--border-color);
+      border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+    }
+    .modal-box table td { vertical-align: top; word-break: break-word; }
     #logsPanel { display: none; }
     #logsPanel.show { display: block; }
   </style>
@@ -400,7 +411,9 @@
       </table>
     </div>
 
-    <div class="card" id="detailsPanel" style="display: none; margin-top: 30px;"></div>
+    <div class="modal-backdrop" id="detailsModal" onclick="if (event.target === this) closeDetails()">
+      <div class="modal-box" id="detailsPanel" role="dialog" aria-modal="true"></div>
+    </div>
 
     <div class="card" style="margin-top: 30px;">
       <div class="card-header">
@@ -458,7 +471,7 @@
 
         document.getElementById('stat-completed').textContent = (data.recentRuns || []).reduce((n, r) => n + r.completed, 0);
         document.getElementById('stat-failed').textContent = (data.recentRuns || []).reduce((n, r) => n + r.failed, 0);
-        if (selectedRunId !== null && document.getElementById('detailsPanel').style.display !== 'none') {
+        if (selectedRunId !== null && document.getElementById('detailsModal').classList.contains('show')) {
           viewRun(selectedRunId, true);
         }
 
@@ -635,8 +648,7 @@
           </table>
         `;
 
-        detailsPanel.style.display = 'block';
-        if (!isRefresh) detailsPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        document.getElementById('detailsModal').classList.add('show');
       } catch (error) {
         addLog('error', `Failed to view run: ${error.message}`);
         alert(`Failed to view run #${runId}: ${error.message}`);
@@ -645,8 +657,10 @@
 
     function closeDetails() {
       selectedRunId = null;
-      document.getElementById('detailsPanel').style.display = 'none';
+      document.getElementById('detailsModal').classList.remove('show');
     }
+
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetails(); });
 
     function toggleLogs() {
       const panel = document.getElementById('logsPanel');

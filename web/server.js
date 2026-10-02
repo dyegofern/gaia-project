@@ -20,7 +20,7 @@ const io = new Server(httpServer, {
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(join(__dirname, 'public')));
+app.use(express.static(join(__dirname, 'public'), { etag: false, lastModified: false, setHeaders: res => res.set('Cache-Control', 'no-store') }));
 
 // Database paths
 const GAIA_DB_PATH = join(__dirname, '..', 'gaia_runs.db');
