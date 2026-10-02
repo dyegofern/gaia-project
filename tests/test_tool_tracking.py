@@ -104,3 +104,13 @@ def test_youtube_frames_accepts_question():
 ])
 def test_give_up_answers_are_flagged(answer, failed):
     assert _answer_failed(answer) is failed
+
+
+def test_agent_stops_immediately_on_billing_error():
+    from openai import APIStatusError
+    resp = MagicMock(); resp.request = MagicMock(); resp.status_code = 402
+    err = APIStatusError("You have depleted your monthly included credits", response=resp, body=None)
+    with patch.object(agent_mod, "chat_completion", side_effect=err) as cc:
+        out = agent_mod.GaiaAgent()("What is 2+2?")
+    assert out.startswith(agent_mod.BACKEND_FATAL_PREFIX)
+    assert cc.call_count == 1  # no corrective-nudge retry, no forced-answer fallback

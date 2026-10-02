@@ -5,7 +5,7 @@ import functools
 import contextvars
 from openai import APIError, RateLimitError, BadRequestError
 
-from gaia_agent.llm import chat_completion
+from gaia_agent.llm import chat_completion, is_fatal_backend_error
 from gaia_agent.tools import (
     web_search, WEB_SEARCH_SCHEMA,
     fetch_page, FETCH_PAGE_SCHEMA,
@@ -142,7 +142,23 @@ TOOL_FUNCTIONS = {
 MAX_ITERATIONS = 10
 
 
+# run_eval stops dispatching further questions when an answer starts with this.
+BACKEND_FATAL_PREFIX = "AGENT ERROR: BACKEND UNAVAILABLE"
+
+
+def _detail(e) -> str:
+    body = getattr(e, "message", None) or str(e)
+    return f"HTTP {getattr(e, 'status_code', '?')}: {str(body)[:300]}"
+
+
 def _format_api_error(e: APIError) -> str:
+    if is_fatal_backend_error(e):
+        hint = {
+            401: "the API key was rejected",
+            402: "the account's credits/quota are exhausted",
+            403: "access is forbidden for this key",
+        }[e.status_code]
+        return f"{BACKEND_FATAL_PREFIX} - {hint}. {_detail(e)}"
     if isinstance(e, RateLimitError):
         error_msg = str(e)
         if "tokens per day" in error_msg or "TPD" in error_msg:
@@ -163,7 +179,7 @@ def _format_api_error(e: APIError) -> str:
     elif isinstance(e, ConnectionError):
         return f"AGENT ERROR: Connection failed - Could not reach LLM server. Please check your backend is running."
     else:
-        return f"AGENT ERROR: Could not produce a final answer after repeated API errors ({type(e).__name__})"
+        return f"AGENT ERROR: Could not produce a final answer after repeated API errors ({type(e).__name__}; {_detail(e)})"
 
 
 # Some models (e.g. Qwen3.5 on Lemonade) sometimes write tool calls as
@@ -253,6 +269,8 @@ class GaiaAgent:
             try:
                 response = chat_completion(messages, tools=TOOLS)
             except APIError as e:
+                if is_fatal_backend_error(e):
+                    return _format_api_error(e)
                 # The server rejected the model's own generation (e.g. a
                 # malformed tool-call name with leaked internal formatting
                 # tokens) before returning any response object -- there is
@@ -271,7 +289,9 @@ class GaiaAgent:
                 })
                 try:
                     response = chat_completion(messages, tools=TOOLS)
-                except APIError:
+                except APIError as e2:
+                    if is_fatal_backend_error(e2):
+                        return _format_api_error(e2)
                     # Two consecutive failures: give up on the tool-calling
                     # loop for this question and fall through to the
                     # forced-final-answer fallback below, using whatever

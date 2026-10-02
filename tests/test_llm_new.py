@@ -160,3 +160,22 @@ class TestFormatApiError:
         )
         result = _format_api_error(error)
         assert "error" in result.lower()
+
+
+class TestFatalBackendErrors:
+    def _err(self, cls, status, msg):
+        resp = MagicMock(); resp.request = MagicMock(); resp.status_code = status
+        return cls(msg, response=resp, body=None)
+
+    def test_402_is_fatal_and_message_explains_credits(self):
+        from openai import APIStatusError
+        from gaia_agent.llm import is_fatal_backend_error
+        e = self._err(APIStatusError, 402, "You have depleted your monthly included credits")
+        assert is_fatal_backend_error(e)
+        out = _format_api_error(e)
+        assert out.startswith("AGENT ERROR: BACKEND UNAVAILABLE") and "credits" in out and "402" in out
+
+    def test_429_and_500_are_not_fatal(self):
+        from gaia_agent.llm import is_fatal_backend_error
+        assert not is_fatal_backend_error(self._err(RateLimitError, 429, "slow down"))
+        assert not is_fatal_backend_error(ValueError("x"))

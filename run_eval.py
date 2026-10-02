@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from gaia_agent.agent import GaiaAgent, set_global_db
+from gaia_agent.agent import BACKEND_FATAL_PREFIX, GaiaAgent, set_global_db
 from gaia_agent.results_db import DEFAULT_DB_PATH, DONE, ResultsDB
 from gaia_agent.llm import check_backend_health
 
@@ -78,7 +78,11 @@ def run_agent_on_questions(agent, db, run_id, questions, workers=DEFAULT_WORKERS
     except ImportError:
         use_tqdm = False
 
+    backend_dead = threading.Event()
+
     def work(item):
+        if backend_dead.is_set():
+            return  # leave it pending so --continue picks it up
         task_id, question_text = item["task_id"], item["question"]
         db.mark_running(run_id, task_id)
         try:
@@ -92,6 +96,13 @@ def run_agent_on_questions(agent, db, run_id, questions, workers=DEFAULT_WORKERS
         except Exception as e:
             answer = f"AGENT ERROR: {e}"
             ok = False
+        if answer.startswith(BACKEND_FATAL_PREFIX):
+            db.save_answer(run_id, task_id, answer, ok=False)
+            if not backend_dead.is_set():
+                backend_dead.set()
+                msg = f"\nSTOPPING: {answer}\nRemaining questions left pending; fix the backend and run with --continue."
+                tqdm.write(msg) if use_tqdm else print(msg, flush=True)
+            return
         db.save_answer(run_id, task_id, answer, ok=ok)
         with _print_lock:
             finished[0] += 1

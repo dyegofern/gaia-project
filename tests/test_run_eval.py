@@ -92,3 +92,21 @@ def test_runs_are_tracked_separately_and_export_round_trips(tmp_path):
     run_eval.export_results(run_eval.answers_from_run(db, first), str(export_path))
 
     assert run_eval.load_results_from_file(str(export_path)) == [{"task_id": "t0", "submitted_answer": "one"}]
+
+
+def test_fatal_backend_error_stops_run_and_leaves_rest_pending(tmp_path):
+    from gaia_agent.agent import BACKEND_FATAL_PREFIX
+
+    db = ResultsDB(str(tmp_path / "runs.db"))
+    run_id = db.create_run("hf")
+    db.add_questions(run_id, QUESTIONS)
+
+    def dead_backend(question, task_id=None):
+        return f"{BACKEND_FATAL_PREFIX} - the account's credits/quota are exhausted. HTTP 402"
+
+    run_eval.run_agent_on_questions(dead_backend, db, run_id, db.incomplete(run_id), workers=1)
+
+    statuses = [r["status"] for r in db.results(run_id)]
+    assert statuses.count("error") == 1       # only the question that hit the wall
+    assert statuses.count("pending") == len(QUESTIONS) - 1  # the rest wait for --continue
+    assert len(db.incomplete(run_id)) == len(QUESTIONS)

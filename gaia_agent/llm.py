@@ -188,12 +188,21 @@ def _semaphore_for(backend):
         return _semaphores[backend]
 
 
+# Auth/billing failures are deterministic: retrying (or running the rest of
+# the questions) can't help, so callers should stop and report them.
+FATAL_STATUS_CODES = (401, 402, 403)
+
+
+def is_fatal_backend_error(e) -> bool:
+    return getattr(e, "status_code", None) in FATAL_STATUS_CODES
+
+
 @backoff.on_exception(
     backoff.expo,
     (RateLimitError, APIError),
     max_tries=5,
     max_time=3600,
-    giveup=lambda e: "401" in str(e) or "403" in str(e),
+    giveup=is_fatal_backend_error,
     on_backoff=lambda details: print(f"Rate limited, waiting {details['elapsed']:.1f}s before retry...")
 )
 def chat_completion(messages, tools=None, timeout=120):
