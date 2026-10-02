@@ -60,6 +60,7 @@
     .status-badge.running { background: rgba(88, 166, 255, 0.2); color: var(--accent-blue, #58a6ff); }
     .status-badge.completed { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
     .status-badge.failed { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
+    .status-badge.interrupted { background: rgba(210, 153, 34, 0.25); color: var(--accent-yellow); border: 1px dashed var(--accent-yellow); }
     .status-badge.pending { background: rgba(210, 153, 34, 0.2); color: var(--accent-yellow); }
 
     .grid {
@@ -251,6 +252,18 @@
       border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
     }
     .modal-box table td { vertical-align: top; word-break: break-word; }
+    .clickable { cursor: pointer; }
+    .clickable:hover { background: rgba(88, 166, 255, 0.08); }
+    pre.logbox {
+      background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px;
+      padding: 10px; max-height: 280px; overflow: auto; font-size: 11px; white-space: pre-wrap; word-break: break-word;
+    }
+    .msg { border-left: 3px solid var(--border-color); padding: 6px 10px; margin: 8px 0; font-size: 12px; }
+    .msg.assistant { border-color: var(--accent-blue, #58a6ff); }
+    .msg.tool { border-color: var(--accent-green); }
+    .msg.user { border-color: var(--accent-yellow); }
+    .msg .role { font-size: 10px; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 4px; }
+    .msg pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
     #logsPanel { display: none; }
     #logsPanel.show { display: block; }
   </style>
@@ -422,7 +435,8 @@
         <button class="btn btn-secondary" onclick="clearLogs()">Clear</button>
       </div>
       <div class="logs" id="logsPanel">
-        <div class="log-entry info">Logs will appear here when a run is in progress...</div>
+        <pre class="logbox" id="liveRunLog" style="max-height: 320px;">Select Show to tail the latest run's log...</pre>
+        <div class="log-entry info">Dashboard events appear below.</div>
       </div>
     </div>
   </div>
@@ -432,6 +446,7 @@
     let refreshCountdown = 0;
     let refreshTimer = null;
     let selectedRunId = null;
+    let latestRunId = null;
 
     const socket = io();
 
@@ -466,6 +481,7 @@
         document.getElementById('health-gemini').className = 'health-dot ' + (data.health.gemini ? 'healthy' : 'unhealthy');
 
         // Update stats
+        latestRunId = data.latestRun ? data.latestRun.run_id : null;
         document.getElementById('stat-total-runs').textContent = data.totalRuns || 0;
         document.getElementById('stat-db-status').textContent = data.gaiaDbExists ? '✓' : '✗';
 
@@ -494,6 +510,7 @@
                 <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="viewRun(${run.run_id})">
                   View
                 </button>
+                ${run.status === 'running' && run.alive !== false ? `<button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px; color: var(--accent-red);" onclick="cancelRun(${run.run_id})">Cancel</button>` : ''}
               </td>
             </tr>
           `).join('');
@@ -631,13 +648,15 @@
           <table>
             <thead><tr><th>Task ID</th><th>Status</th><th>Question</th><th>Answer</th></tr></thead>
             <tbody>
-              ${data.questions.map(q => `<tr>
+              ${data.questions.map(q => `<tr class="clickable" onclick="viewTask(${runId}, '${esc(q.task_id)}')" title="Click for the full transcript">
                 <td title="${esc(q.task_id)}">${esc(String(q.task_id).slice(0, 8))}</td>
                 <td>${esc(q.status)}</td>
                 <td>${esc(String(q.question).slice(0, 120))}</td>
                 <td>${esc(String(q.answer ?? '').slice(0, 120))}</td></tr>`).join('') || '<tr><td colspan="4">No questions</td></tr>'}
             </tbody>
           </table>
+
+          <div id="taskDetail"></div>
 
           <h4 style="margin-top: 20px;">Tool Stats</h4>
           <table>
@@ -646,26 +665,102 @@
               ${data.tools.map(t => `<tr><td>${esc(t.tool_name)}</td><td>${esc(t.call_count)}</td><td>${esc(t.success_count)}</td><td>${esc(t.error_count)}</td></tr>`).join('') || '<tr><td colspan="4">No tool stats</td></tr>'}
             </tbody>
           </table>
+
+          <h4 style="margin-top: 20px;">Run log <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;" onclick="loadRunLog(${runId})">Refresh</button></h4>
+          <pre class="logbox" id="runLog">Loading...</pre>
         `;
 
         document.getElementById('detailsModal').classList.add('show');
+        loadRunLog(runId);
+        if (openTaskId && !isRefresh) viewTask(runId, openTaskId);
       } catch (error) {
         addLog('error', `Failed to view run: ${error.message}`);
         alert(`Failed to view run #${runId}: ${error.message}`);
       }
     }
 
+    let openTaskId = null;
+
+    async function loadRunLog(runId) {
+      const box = document.getElementById('runLog');
+      if (!box) return;
+      try {
+        const data = await (await fetch(`/api/run/${runId}/log`)).json();
+        const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+        box.textContent = data.text || data.note || '(empty)';
+        if (stick) box.scrollTop = box.scrollHeight;
+      } catch (e) {
+        box.textContent = `Could not load log: ${e.message}`;
+      }
+    }
+
+    async function viewTask(runId, taskId) {
+      openTaskId = taskId;
+      const holder = document.getElementById('taskDetail');
+      if (!holder) return;
+      holder.innerHTML = '<p>Loading transcript...</p>';
+      try {
+        const res = await fetch(`/api/run/${runId}/task/${encodeURIComponent(taskId)}`);
+        const d = await res.json();
+        if (!res.ok) { holder.innerHTML = `<p>${esc(d.error)}</p>`; return; }
+        const blocks = (d.messages || []).map(m => {
+          const calls = (m.tool_calls || []).map(c => `<div><strong>→ ${esc(c.function?.name)}</strong>(${esc(c.function?.arguments)})</div>`).join('');
+          const body = m.content ? `<pre>${esc(m.content)}</pre>` : '';
+          return `<div class="msg ${esc(m.role)}"><div class="role">${esc(m.role)}</div>${calls}${body}</div>`;
+        }).join('') || '<p>No transcript was recorded for this question (it ran before transcripts were added).</p>';
+        const tools = d.tools.map(t => `<li>${t.success ? '✓' : '✗'} ${esc(t.tool_name)} (${esc(t.duration_ms)} ms)${t.error_message ? ' — ' + esc(t.error_message) : ''}</li>`).join('');
+        holder.innerHTML = `
+          <div class="card" style="margin-top: 20px;">
+            <div class="card-header"><h3>Question ${esc(taskId.slice(0, 8))}</h3>
+              <button class="btn btn-secondary" onclick="document.getElementById('taskDetail').innerHTML=''; openTaskId=null;">Hide</button></div>
+            <p><strong>Status:</strong> ${esc(d.task.status)} &nbsp; <strong>Answer:</strong> ${esc(d.task.answer ?? '')}</p>
+            <p>${esc(d.task.question)}</p>
+            ${tools ? `<ul style="font-size: 12px;">${tools}</ul>` : ''}
+            ${blocks}
+          </div>`;
+      } catch (e) {
+        holder.innerHTML = `<p>Failed to load transcript: ${esc(e.message)}</p>`;
+      }
+    }
+
+    async function cancelRun(runId) {
+      if (!confirm(`Cancel run #${runId}? In-flight questions go back to pending; use Continue to resume.`)) return;
+      try {
+        const res = await fetch(`/api/run/${runId}/cancel`, { method: 'POST' });
+        const data = await res.json();
+        addLog(res.ok ? 'info' : 'error', data.message || data.error);
+        setTimeout(refreshStatus, 1500);
+      } catch (e) {
+        addLog('error', `Cancel failed: ${e.message}`);
+      }
+    }
+
     function closeDetails() {
+      openTaskId = null;
       selectedRunId = null;
       document.getElementById('detailsModal').classList.remove('show');
     }
 
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetails(); });
 
+    async function refreshLiveLog() {
+      const panel = document.getElementById('logsPanel');
+      const box = document.getElementById('liveRunLog');
+      if (!panel.classList.contains('show') || latestRunId === null) return;
+      try {
+        const data = await (await fetch(`/api/run/${latestRunId}/log`)).json();
+        const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+        box.textContent = `# run ${latestRunId}\n` + (data.text || data.note || '(empty)');
+        if (stick) box.scrollTop = box.scrollHeight;
+      } catch { /* transient */ }
+    }
+    setInterval(refreshLiveLog, 3000);
+
     function toggleLogs() {
       const panel = document.getElementById('logsPanel');
       panel.classList.toggle('show');
       document.getElementById('toggleLogs').textContent = panel.classList.contains('show') ? 'Hide' : 'Show';
+      refreshLiveLog();
     }
 
     function clearLogs() {

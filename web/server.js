@@ -3,10 +3,10 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import initSqlJs from 'sql.js';
 import cors from 'cors';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync, statSync, readFileSync } from 'fs';
+import { dirname, join, resolve, sep } from 'path';
+import { existsSync, statSync, readFileSync, mkdirSync, openSync, closeSync, readSync } from 'fs';
 import http from 'http';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -161,6 +161,8 @@ const RUNS_SQL = `
     r.run_id,
     r.backend,
     r.started_at,
+    r.pid,
+    r.log_path,
     COUNT(x.task_id) AS total_questions,
     COALESCE(SUM(x.status = 'done'), 0) AS completed,
     COALESCE(SUM(x.status = 'error'), 0) AS failed,
@@ -179,6 +181,39 @@ const RUNS_SQL = `
   GROUP BY r.run_id
 `;
 
+const LOGS_DIR = join(__dirname, '..', 'logs');
+
+function isRunEvalProcess(pid) {
+  // Guard against pid reuse: only treat it as ours if it is really run_eval.py.
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('run_eval.py');
+  } catch {
+    return false;
+  }
+}
+
+// A run whose process is gone but which still has unfinished questions is
+// "interrupted" (crashed, killed, or cancelled) rather than "running".
+function withLiveness(run) {
+  if (!run) return run;
+  const unfinished = ['running', 'pending'].includes(run.status);
+  const alive = run.pid ? isRunEvalProcess(run.pid) : null;
+  return { ...run, alive, status: unfinished && alive === false ? 'interrupted' : run.status };
+}
+
+function tailFile(path, maxBytes) {
+  const size = statSync(path).size;
+  const start = Math.max(0, size - maxBytes);
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    return { text: buf.toString('utf8'), truncated: start > 0, size };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // API Routes
 
 app.get('/api/status', async (req, res) => {
@@ -189,8 +224,8 @@ app.get('/api/status', async (req, res) => {
       health[backend] = await checkBackendHealth(backend);
     }
 
-    const latestRun = gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC LIMIT 1')[0] || null;
-    const recentRuns = gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC LIMIT 10');
+    const latestRun = withLiveness(gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC LIMIT 1')[0]) || null;
+    const recentRuns = gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC LIMIT 10').map(withLiveness);
     const totalRunsRow = gaiaQuery('SELECT COUNT(*) AS count FROM runs')[0];
 
     res.json({
@@ -208,7 +243,7 @@ app.get('/api/status', async (req, res) => {
 app.get('/api/run/:runId', (req, res) => {
   try {
     const id = Number.parseInt(req.params.runId, 10);
-    const run = gaiaQuery(`SELECT * FROM (${RUNS_SQL}) WHERE run_id = ?`, [id])[0] || null;
+    const run = withLiveness(gaiaQuery(`SELECT * FROM (${RUNS_SQL}) WHERE run_id = ?`, [id])[0]) || null;
     if (!run) {
       return res.status(404).json({ error: 'Run not found' });
     }
@@ -222,6 +257,58 @@ app.get('/api/run/:runId', (req, res) => {
              SUM(duration_ms) AS total_duration_ms
       FROM tool_usage WHERE run_id = ? GROUP BY tool_name ORDER BY call_count DESC`, [id]);
     res.json({ run, questions, tools });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/run/:runId/log', (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.runId, 10);
+    const row = gaiaQuery('SELECT log_path FROM runs WHERE run_id = ?', [id])[0];
+    if (!row || !row.log_path) {
+      return res.json({ text: '', note: 'No log recorded for this run (it was not started from the dashboard).' });
+    }
+    // Only ever serve files inside the logs directory.
+    const path = resolve(row.log_path);
+    if (!path.startsWith(resolve(LOGS_DIR) + sep) || !existsSync(path)) {
+      return res.json({ text: '', note: 'Log file not available.' });
+    }
+    const maxBytes = Math.min(Number.parseInt(req.query.bytes, 10) || 20000, 200000);
+    res.json(tailFile(path, maxBytes));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/run/:runId/task/:taskId', (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.runId, 10);
+    const task = gaiaQuery(
+      'SELECT task_id, status, question, answer FROM results WHERE run_id = ? AND task_id = ?',
+      [id, req.params.taskId])[0];
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const tr = gaiaQuery('SELECT messages, saved_at FROM transcripts WHERE run_id = ? AND task_id = ?',
+      [id, req.params.taskId])[0];
+    const tools = gaiaQuery(
+      'SELECT tool_name, success, duration_ms, error_message FROM tool_usage WHERE run_id = ? AND task_id = ? ORDER BY id',
+      [id, req.params.taskId]);
+    res.json({ task, tools, messages: tr ? JSON.parse(tr.messages) : null });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/run/:runId/cancel', (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.runId, 10);
+    const row = gaiaQuery('SELECT pid FROM runs WHERE run_id = ?', [id])[0];
+    if (!row || !row.pid || !isRunEvalProcess(row.pid)) {
+      return res.status(409).json({ error: 'This run has no live process to cancel.' });
+    }
+    // SIGTERM: run_eval resets in-flight questions to pending, so --continue resumes cleanly.
+    process.kill(row.pid, 'SIGTERM');
+    res.json({ success: true, message: `Cancelling run ${id} (pid ${row.pid})` });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -247,7 +334,7 @@ app.get('/api/tool-stats', (req, res) => {
 
 app.get('/api/run-progress', (req, res) => {
   try {
-    res.json(gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC'));
+    res.json(gaiaQuery(RUNS_SQL + ' ORDER BY r.run_id DESC').map(withLiveness));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -282,14 +369,20 @@ app.post('/api/trigger-run', async (req, res) => {
     const scriptPath = join(__dirname, '..', 'run_eval.py');
     const args = [scriptPath, ...typeFlags[type], '--workers', String(workersArg)];
 
-    // Run in the background; the backend is chosen via the env var the agent reads.
-    execFile(pythonBin, args,
-      { timeout: 3600000, env: { ...process.env, GAIA_LLM_BACKEND: backend } },
-      (error) => {
-        if (error) console.error('Run error:', error.message);
-      });
+    // Run in the background with output going to its own log file; the backend
+    // is chosen via the env var the agent reads.
+    mkdirSync(LOGS_DIR, { recursive: true });
+    const logPath = join(LOGS_DIR, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${backend}.log`);
+    const fd = openSync(logPath, 'a');
+    const child = spawn(pythonBin, [...args, '--log-file', logPath], {
+      env: { ...process.env, GAIA_LLM_BACKEND: backend, PYTHONUNBUFFERED: '1' },
+      stdio: ['ignore', fd, fd],
+    });
+    closeSync(fd);
+    child.on('error', (error) => console.error('Run error:', error.message));
+    child.on('exit', (code, signal) => console.log(`Run process ${child.pid} exited (code ${code}, signal ${signal})`));
 
-    res.json({ success: true, message: `Run started in background on ${backend}` });
+    res.json({ success: true, message: `Run started in background on ${backend}`, pid: child.pid });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

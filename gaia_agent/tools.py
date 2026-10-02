@@ -100,6 +100,18 @@ def _attachment_name(task_id: str):
     return _question_file_names.get(task_id) or None
 
 
+def attachment_hint(task_id: str) -> str:
+    """One line for the prompt saying whether the task has an attachment, so
+    the model doesn't call download_gaia_file on questions without one.
+    Empty when the scoring API's question list can't be read."""
+    name = _attachment_name(task_id)
+    if _question_file_names is None:
+        return ""
+    if name:
+        return f"(attached file: {name})"
+    return "(no file is attached to this question)"
+
+
 def _find_local_attachment(task_id: str):
     for folder in (LOCAL_FILES_DIR, SCRATCH_DIR):
         if os.path.isdir(folder):

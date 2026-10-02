@@ -186,6 +186,12 @@ def submit(username, agent_code, answers):
 
 
 def main():
+    import signal
+
+    def _terminate(signum, frame):
+        raise KeyboardInterrupt  # the dashboard's Cancel (SIGTERM) takes the same graceful path as Ctrl-C
+
+    signal.signal(signal.SIGTERM, _terminate)
     parser = argparse.ArgumentParser()
     parser.add_argument("--random", action="store_true", help="Run on a single random question instead of the full set")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help=f"Questions to run in parallel (default {DEFAULT_WORKERS})")
@@ -197,6 +203,7 @@ def main():
     parser.add_argument("--submit", action="store_true", help="Submit answers to the real scoring API")
     parser.add_argument("--username", help="HF username, required with --submit")
     parser.add_argument("--agent-code", help="Public URL to this code, required with --submit")
+    parser.add_argument("--log-file", help="Path of the file this process's output is being written to (recorded with the run so the dashboard can show it)")
     parser.add_argument("--from-file", help="Submit previously-saved results from a run_eval.py output file instead of running the agent again")
     args = parser.parse_args()
 
@@ -314,6 +321,9 @@ def run_and_record(args, db):
     db.add_questions(run_id, questions)
     todo = db.incomplete(run_id)
     print(f"Run {run_id}: {len(questions)} question(s), {len(todo)} to run with {args.workers} worker(s).")
+
+    # Record who is running this (for cancel / stalled-run detection) and its log.
+    db.set_run_process(run_id, os.getpid(), os.path.abspath(args.log_file) if args.log_file else None)
 
     # Set global DB for tool instrumentation
     set_global_db(db, run_id)

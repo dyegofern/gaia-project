@@ -114,3 +114,40 @@ def test_agent_stops_immediately_on_billing_error():
         out = agent_mod.GaiaAgent()("What is 2+2?")
     assert out.startswith(agent_mod.BACKEND_FATAL_PREFIX)
     assert cc.call_count == 1  # no corrective-nudge retry, no forced-answer fallback
+
+
+def test_transcript_roundtrip_truncates_long_tool_output(db):
+    run = db.create_run("lemonade")
+    msgs = [{"role": "user", "content": "q"}, {"role": "tool", "content": "x" * 9000}]
+    db.save_transcript(run, "t1", msgs, answer="42", max_chars=100)
+    t = db.get_transcript(run, "t1")
+    assert t["answer"] == "42" and t["messages"][0]["content"] == "q"
+    assert len(t["messages"][1]["content"]) < 200 and "truncated" in t["messages"][1]["content"]
+    assert db.get_transcript(run, "missing") is None
+
+
+def test_set_run_process_and_old_runs_table_migrates(tmp_path):
+    path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(path)
+    conn.executescript("CREATE TABLE runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, started_at REAL NOT NULL, backend TEXT);"
+                       "INSERT INTO runs (started_at, backend) VALUES (1, 'x');")
+    conn.commit(); conn.close()
+    db = ResultsDB(path)
+    db.set_run_process(1, 4242, "/tmp/x.log")
+    with db._connect() as c:
+        row = c.execute("SELECT pid, log_path FROM runs WHERE run_id = 1").fetchone()
+    assert (row["pid"], row["log_path"]) == (4242, "/tmp/x.log")
+
+
+def test_agent_saves_transcript_and_hints_attachment(db):
+    run = db.create_run("lemonade")
+    agent_mod.set_global_db(db, run)
+    reply = MagicMock()
+    reply.choices = [MagicMock(message=MagicMock(tool_calls=None, content="FINAL ANSWER: 4"))]
+    with patch.object(agent_mod, "chat_completion", return_value=reply), \
+         patch.object(agent_mod, "attachment_hint", return_value="(no file is attached to this question)"):
+        assert agent_mod.GaiaAgent()("2+2?", task_id="tid") == "4"
+    t = db.get_transcript(run, "tid")
+    assert t["answer"] == "4"
+    assert t["messages"][0]["role"] == "user" and "no file is attached" in t["messages"][0]["content"]
+    assert t["messages"][-1] == {"role": "assistant", "content": "FINAL ANSWER: 4"}

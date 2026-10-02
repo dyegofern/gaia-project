@@ -9,7 +9,7 @@ from gaia_agent.llm import chat_completion, is_fatal_backend_error
 from gaia_agent.tools import (
     web_search, WEB_SEARCH_SCHEMA,
     fetch_page, FETCH_PAGE_SCHEMA,
-    download_gaia_file, DOWNLOAD_GAIA_FILE_SCHEMA,
+    download_gaia_file, DOWNLOAD_GAIA_FILE_SCHEMA, attachment_hint,
     read_file, READ_FILE_SCHEMA,
     python_exec, PYTHON_EXEC_SCHEMA,
     transcribe_audio, TRANSCRIBE_AUDIO_SCHEMA,
@@ -98,6 +98,8 @@ def set_global_db(db, run_id):
 
 
 _current_task_id = contextvars.ContextVar("gaia_task_id", default=None)
+# The live message list of the question being answered, saved as its transcript.
+_trace = contextvars.ContextVar("gaia_trace", default=[])
 
 
 def _record(tool_name, success, duration_ms, error_message=None):
@@ -237,6 +239,26 @@ class GaiaAgent:
 
     def __call__(self, question: str, task_id: str | None = None) -> str:
         _current_task_id.set(task_id)
+        _trace.set([])
+        answer = None
+        try:
+            answer = self._solve(question, task_id)
+            return answer
+        finally:
+            self._save_transcript(task_id, answer)
+
+    @staticmethod
+    def _save_transcript(task_id, answer):
+        # Debugging aid only: must never affect the answer.
+        if _global_db is None or _global_run_id is None or not task_id:
+            return
+        try:
+            _global_db.save_transcript(
+                _global_run_id, task_id, [m for m in _trace.get() if m.get("role") != "system"], answer)
+        except Exception as e:
+            print(f"WARNING: could not save transcript for {task_id}: {e}", flush=True)
+
+    def _solve(self, question: str, task_id: str | None = None) -> str:
         user_content = question
         if _looks_like_reversed_text(question):
             user_content += (
@@ -245,11 +267,15 @@ class GaiaAgent:
             )
         if task_id:
             user_content += f"\n\n(task_id: {task_id})"
+            hint = attachment_hint(task_id)
+            if hint:
+                user_content += f"\n{hint}"
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ]
+        _trace.set(messages)
 
         last_content = ""
         nudged = False
@@ -329,6 +355,7 @@ class GaiaAgent:
                 continue
 
             last_content = message.content or ""
+            messages.append({"role": "assistant", "content": last_content})
             stopped_early = True
             break
 
@@ -343,6 +370,7 @@ class GaiaAgent:
             try:
                 response = chat_completion(messages, tools=None)
                 last_content = response.choices[0].message.content or ""
+                messages.append({"role": "assistant", "content": last_content})
             except APIError as e:
                 return _format_api_error(e)
 

@@ -1,4 +1,5 @@
 import contextlib
+import json
 import sqlite3
 import time
 
@@ -32,6 +33,14 @@ CREATE TABLE IF NOT EXISTS tool_usage (
     duration_ms INTEGER NOT NULL,
     error_message TEXT
 );
+CREATE TABLE IF NOT EXISTS transcripts (
+    run_id INTEGER NOT NULL REFERENCES runs(run_id),
+    task_id TEXT NOT NULL,
+    messages TEXT NOT NULL,
+    answer TEXT,
+    saved_at REAL NOT NULL,
+    PRIMARY KEY (run_id, task_id)
+);
 CREATE INDEX IF NOT EXISTS idx_results_run_status ON results(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_results_status ON results(status);
 CREATE INDEX IF NOT EXISTS idx_tool_stats_run ON tool_usage(run_id);
@@ -50,6 +59,14 @@ class ResultsDB:
             conn.execute("PRAGMA cache_size=-64000")
             self._migrate_tool_usage(conn)
             conn.executescript(_SCHEMA)
+            self._migrate_runs(conn)
+
+    @staticmethod
+    def _migrate_runs(conn):
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
+        for col, ddl in (("pid", "INTEGER"), ("log_path", "TEXT")):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
 
     @staticmethod
     def _migrate_tool_usage(conn):
@@ -82,6 +99,36 @@ class ResultsDB:
                 "INSERT INTO runs (started_at, backend) VALUES (?, ?)", (time.time(), backend)
             )
             return cur.lastrowid
+
+    def set_run_process(self, run_id, pid, log_path=None):
+        """Record which OS process is executing a run (so it can be cancelled
+        and so a dead process can be told apart from a live one) and where its
+        log file lives."""
+        with self._connect() as conn:
+            conn.execute("UPDATE runs SET pid = ?, log_path = COALESCE(?, log_path) WHERE run_id = ?",
+                         (pid, log_path, run_id))
+
+    def save_transcript(self, run_id, task_id, messages, answer=None, max_chars=6000):
+        """Store the conversation (system prompt excluded by the caller if
+        desired), truncating very long tool outputs."""
+        def clip(m):
+            m = dict(m)
+            if isinstance(m.get("content"), str) and len(m["content"]) > max_chars:
+                m["content"] = m["content"][:max_chars] + f"\n...[truncated {len(m['content']) - max_chars} chars]"
+            return m
+        blob = json.dumps([clip(m) for m in messages], default=str)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO transcripts (run_id, task_id, messages, answer, saved_at) VALUES (?, ?, ?, ?, ?)",
+                (run_id, task_id, blob, answer, time.time()))
+
+    def get_transcript(self, run_id, task_id):
+        with self._connect() as conn:
+            row = conn.execute("SELECT messages, answer, saved_at FROM transcripts WHERE run_id = ? AND task_id = ?",
+                               (run_id, task_id)).fetchone()
+        if row is None:
+            return None
+        return {"messages": json.loads(row["messages"]), "answer": row["answer"], "saved_at": row["saved_at"]}
 
     def latest_run_id(self):
         with self._connect() as conn:
