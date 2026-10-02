@@ -15,6 +15,7 @@ from gaia_agent.tools import (
     transcribe_audio, TRANSCRIBE_AUDIO_SCHEMA,
     transcribe_youtube_video, TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA,
     analyze_youtube_frames, ANALYZE_YOUTUBE_FRAMES_SCHEMA,
+    analyze_youtube_frames_at, ANALYZE_YOUTUBE_FRAMES_AT_SCHEMA,
     analyze_image, ANALYZE_IMAGE_SCHEMA,
     read_chess_board_image, READ_CHESS_BOARD_IMAGE_SCHEMA,
     best_chess_moves, BEST_CHESS_MOVES_SCHEMA,
@@ -24,6 +25,7 @@ SYSTEM_PROMPT = """You are a general-purpose research assistant answering benchm
 
 You have access to tools: web_search, fetch_page, download_gaia_file, read_file,
 python_exec, transcribe_audio, transcribe_youtube_video, analyze_youtube_frames,
+analyze_youtube_frames_at,
 analyze_image, read_chess_board_image, best_chess_moves.
 Use them as needed to research and compute the answer. If the question references an
 attached file and a task_id is provided, call download_gaia_file first, then read_file
@@ -34,7 +36,10 @@ side_to_move from the question), then call best_chess_moves with the resulting F
 question asks for. If the question references a YouTube video, use transcribe_youtube_video
 for questions about dialogue/speech, or analyze_youtube_frames for questions about visual
 content (objects, people, counts) -- only use analyze_youtube_frames if actually needed,
-since it is much slower.
+since it is much slower. For "highest/lowest number of X at the same time" questions about
+a video: first call analyze_youtube_frames with a question and frames=40, then call
+analyze_youtube_frames_at on the 2-4 timestamps where the most different kinds of X
+appeared together, and answer from those careful looks (the cheap per-frame names are noisy).
 
 If download_gaia_file returns an ERROR, the attachment is unavailable: do NOT guess file
 paths or call read_file/transcribe_audio/analyze_image on invented names. Reply with
@@ -71,6 +76,7 @@ TOOLS = [
     TRANSCRIBE_AUDIO_SCHEMA,
     TRANSCRIBE_YOUTUBE_VIDEO_SCHEMA,
     ANALYZE_YOUTUBE_FRAMES_SCHEMA,
+    ANALYZE_YOUTUBE_FRAMES_AT_SCHEMA,
     ANALYZE_IMAGE_SCHEMA,
     READ_CHESS_BOARD_IMAGE_SCHEMA,
     BEST_CHESS_MOVES_SCHEMA,
@@ -85,6 +91,7 @@ _TOOL_FUNCTIONS = {
     "transcribe_audio": transcribe_audio,
     "transcribe_youtube_video": transcribe_youtube_video,
     "analyze_youtube_frames": analyze_youtube_frames,
+    "analyze_youtube_frames_at": analyze_youtube_frames_at,
     "analyze_image": analyze_image,
     "read_chess_board_image": read_chess_board_image,
     "best_chess_moves": best_chess_moves,

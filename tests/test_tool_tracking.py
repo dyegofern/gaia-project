@@ -185,3 +185,37 @@ def test_marked_answer_needs_no_extra_call():
 ])
 def test_attachment_failure_prose_is_flagged_as_failed(answer):
     assert _answer_failed(answer)
+
+
+def test_youtube_frames_limits_and_formats_timestamps(tmp_path, monkeypatch):
+    video = tmp_path / "video.webm"; video.write_bytes(b"x")
+    monkeypatch.setattr(tools, "_download_youtube_video", lambda url: (str(video), {"duration": 100}))
+    def fake_run(cmd, **kw):
+        d = cmd[-2].rsplit("/", 1)[0]
+        for i in range(1, 6):
+            open(f"{d}/frame_{i:03d}.jpg", "wb").write(b"x")
+    monkeypatch.setattr(tools.subprocess, "run", fake_run)
+    seen = []
+    monkeypatch.setattr(tools, "_describe_frame", lambda path, q="": seen.append(q) or "two birds")
+    out = tools.analyze_youtube_frames("u", question="birds?", frames=999)
+    assert out.startswith("5 frames sampled evenly across a 100s video")
+    assert "[t~10s] two birds" in out and seen == ["birds?"] * 5
+
+
+def test_youtube_frames_at_validates_input():
+    assert tools.analyze_youtube_frames_at("u", []).startswith("ERROR")
+    assert tools.analyze_youtube_frames_at("u", ["x"]).startswith("ERROR")
+
+
+def test_youtube_download_retries_transient_failures(monkeypatch):
+    calls = []
+    def flaky(url):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("HTTP Error 403: Forbidden")
+        return ("/tmp/v.webm", {})
+    monkeypatch.setattr(tools, "_YOUTUBE_DOWNLOAD_CACHE", {})
+    monkeypatch.setattr(tools, "_download_youtube_video_once", flaky)
+    monkeypatch.setattr(tools.time, "sleep", lambda s: None)
+    assert tools._download_youtube_video("https://y/1")[0] == "/tmp/v.webm"
+    assert len(calls) == 3

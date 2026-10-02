@@ -221,13 +221,17 @@ def _giveup(e):
     giveup=_giveup,
     on_backoff=lambda details: print(f"Rate limited, waiting {details['elapsed']:.1f}s before retry...")
 )
-def chat_completion(messages, tools=None, timeout=None):
+def chat_completion(messages, tools=None, timeout=None, max_tokens=None, extra_body=None):
     client, model = _get_client_and_model()
     backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
     kwargs = {"model": model, "messages": messages,
               "timeout": timeout if timeout is not None else _default_timeout(backend)}
     if tools:
         kwargs["tools"] = tools
+    if max_tokens:
+        kwargs["max_tokens"] = max_tokens
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     with _semaphore_for(backend):
         raw_response = client.chat.completions.with_raw_response.create(**kwargs)
     _maybe_wait_for_rate_limit(raw_response)

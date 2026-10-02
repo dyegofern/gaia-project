@@ -1,6 +1,7 @@
 import base64
 import io
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -299,8 +300,10 @@ TRANSCRIBE_AUDIO_SCHEMA = {
 }
 
 
-YOUTUBE_MAX_FRAMES = 6
+YOUTUBE_MAX_FRAMES = 12
+YOUTUBE_FRAMES_LIMIT = 60
 _YOUTUBE_DOWNLOAD_CACHE = {}
+YOUTUBE_DOWNLOAD_ATTEMPTS = 3
 
 
 def _download_youtube_video(url: str) -> str:
@@ -312,6 +315,20 @@ def _download_youtube_video(url: str) -> str:
     if url in _YOUTUBE_DOWNLOAD_CACHE:
         return _YOUTUBE_DOWNLOAD_CACHE[url]
 
+    last_error = None
+    for attempt in range(YOUTUBE_DOWNLOAD_ATTEMPTS):
+        try:
+            return _download_youtube_video_once(url)
+        except Exception as e:
+            # Observed live: the same URL gets "HTTP Error 403" then downloads
+            # fine seconds later, so retry transient failures before giving up.
+            last_error = e
+            if attempt < YOUTUBE_DOWNLOAD_ATTEMPTS - 1:
+                time.sleep(3)
+    raise last_error
+
+
+def _download_youtube_video_once(url: str):
     tmpdir = tempfile.mkdtemp()
     with yt_dlp.YoutubeDL({
         "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
@@ -389,11 +406,23 @@ DEFAULT_IMAGE_ANALYSIS_PROMPT = (
 IMAGE_ANALYSIS_MAX_DIMENSION = 1024
 
 
+# Qwen3.5 on Lemonade "thinks" before answering: ~12s+ and often no visible
+# answer for a one-line extraction (measured). Turning thinking off makes a
+# frame take ~1-4s, which is what makes dense frame sampling affordable.
+NO_THINKING_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+FRAME_MAX_TOKENS = 300
+
+
 def _describe_frame(image_path: str, question: str = "") -> str:
-    return analyze_image(image_path, question)
+    if question.strip():
+        prompt = (f"This is one frame from a video. Question: {question.strip()}\n"
+                  "Answer for this frame only, briefly and factually (list what you see, no explanation).")
+    else:
+        prompt = "Briefly list the people, animals, objects and on-screen text visible in this video frame."
+    return analyze_image(image_path, prompt, thinking=False)
 
 
-def analyze_image(path: str, question: str = "") -> str:
+def analyze_image(path: str, question: str = "", thinking: bool = True, max_tokens: int = FRAME_MAX_TOKENS) -> str:
     from PIL import Image
     from gaia_agent.llm import chat_completion
 
@@ -424,7 +453,11 @@ def analyze_image(path: str, question: str = "") -> str:
         # Vision inference on this local model has been observed to take
         # 60-90s+ even for moderate prompts; the default 120s timeout isn't
         # enough headroom for more detailed/structured analysis requests.
-        response = chat_completion(messages, timeout=240)
+        if thinking or os.environ.get("GAIA_LLM_BACKEND", "lemonade") != "lemonade":
+            response = chat_completion(messages, timeout=240)
+        else:
+            response = chat_completion(messages, timeout=120, max_tokens=max_tokens,
+                                       extra_body=NO_THINKING_BODY)
     except Exception as e:
         return f"ERROR: could not analyze image {path}: {e}"
     return response.choices[0].message.content or ""
@@ -456,41 +489,51 @@ ANALYZE_IMAGE_SCHEMA = {
 }
 
 
-def analyze_youtube_frames(url: str, question: str = "") -> str:
-    """Describe several frames sampled evenly across the video using a
-    vision-capable model -- slow (one model call per frame) since it's only
-    needed for questions about what is visually shown, not said.
+def analyze_youtube_frames(url: str, question: str = "", frames: int = YOUTUBE_MAX_FRAMES) -> str:
+    """Describe frames sampled evenly across the video with a vision model.
+
+    Brief events (e.g. a third bird species walking into shot for two seconds)
+    are easy to miss, so `frames` can be raised (up to YOUTUBE_FRAMES_LIMIT) for
+    questions about the maximum/minimum count of something.
     """
+    try:
+        frames = max(1, min(int(frames), YOUTUBE_FRAMES_LIMIT))
+    except (TypeError, ValueError):
+        frames = YOUTUBE_MAX_FRAMES
     try:
         video_path, info = _download_youtube_video(url)
     except Exception as e:
         return f"ERROR: could not download video {url}: {e}"
 
     duration = info.get("duration") or 0
-    frames_dir = video_path + ".frames"
+    frames_dir = f"{video_path}.frames{frames}"
+    shutil.rmtree(frames_dir, ignore_errors=True)
     os.makedirs(frames_dir, exist_ok=True)
     try:
-        fps = max(YOUTUBE_MAX_FRAMES / duration, 0.05) if duration else 0.2
+        fps = max(frames / duration, 0.02) if duration else 0.2
         subprocess.run(
             ["ffmpeg", "-i", video_path, "-vf", f"fps={fps}",
              os.path.join(frames_dir, "frame_%03d.jpg"), "-y"],
-            capture_output=True, timeout=60, check=True,
+            capture_output=True, timeout=120, check=True,
         )
     except Exception as e:
         return f"ERROR: could not extract frames from {url}: {e}"
 
-    frame_files = sorted(os.listdir(frames_dir))[:YOUTUBE_MAX_FRAMES]
+    frame_files = sorted(os.listdir(frames_dir))[:frames]
     if not frame_files:
         return f"ERROR: no frames could be extracted from {url}"
 
-    descriptions = []
+    interval = duration / len(frame_files) if duration else 0
+    lines = []
     for i, fname in enumerate(frame_files):
+        stamp = f"t~{int(interval * (i + 0.5))}s" if duration else f"frame {i + 1}"
         try:
             desc = _describe_frame(os.path.join(frames_dir, fname), question)
-            descriptions.append(f"Frame {i + 1} (of {len(frame_files)}, sampled across the video): {desc}")
         except Exception as e:
-            descriptions.append(f"Frame {i + 1}: ERROR describing frame: {e}")
-    return "\n\n".join(descriptions)
+            desc = f"ERROR describing frame: {e}"
+        lines.append(f"[{stamp}] " + " ".join(desc.split()))
+    return (f"{len(frame_files)} frames sampled evenly across a {duration}s video:\n" if duration
+            else f"{len(frame_files)} frames:\n") + "\n".join(lines)
 
 
 ANALYZE_YOUTUBE_FRAMES_SCHEMA = {
@@ -502,15 +545,90 @@ ANALYZE_YOUTUBE_FRAMES_SCHEMA = {
             "across it using a vision model. Use for questions about what "
             "is visually shown (objects, people, counts, on-screen text). "
             "Slower than transcribe_youtube_video -- only use this when the "
-            "question is about visual content, not dialogue."
+            "question is about visual content, not dialogue. Pass `question` "
+            "to say what to look for in each frame. For 'highest/lowest number "
+            "of X at once' questions raise `frames` (e.g. 40) so brief moments "
+            "are not missed, then take the max/min across the per-frame results, "
+            "counting each species once however many individuals or ages."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "The YouTube video URL."},
-                "question": {"type": "string", "description": "Optional: what to look for in each frame (e.g. 'how many bird species are visible?')."},
+                "question": {"type": "string", "description": "Optional: what to look for in each frame (e.g. 'which bird species are visible?')."},
+                "frames": {"type": "integer", "description": "How many frames to sample evenly (default 12, max 60)."},
             },
             "required": ["url"],
+        },
+    },
+}
+
+
+YOUTUBE_ZOOM_MAX_TIMESTAMPS = 5
+# Thinking mode was measured far too slow here (minutes per frame), so the
+# "careful" pass is a visible step-by-step description instead.
+ZOOM_PROMPT_SUFFIX = (
+    " Work step by step: first describe each individual animal/object you can see "
+    "(position, size, colour, shape), then group them into distinct kinds/species "
+    "(adults and young of the same species count once), then give the final count."
+)
+ZOOM_MAX_TOKENS = 700
+
+
+def analyze_youtube_frames_at(url: str, timestamps: list, question: str = "") -> str:
+    """Careful (thinking-enabled) look at specific moments of a video.
+
+    Meant as the second step after analyze_youtube_frames: take the
+    timestamps where the cheap dense pass found the most going on and
+    inspect those frames properly.
+    """
+    try:
+        stamps = [float(x) for x in list(timestamps)[:YOUTUBE_ZOOM_MAX_TIMESTAMPS]]
+    except (TypeError, ValueError):
+        return "ERROR: timestamps must be a list of numbers (seconds)"
+    if not stamps:
+        return "ERROR: give at least one timestamp (seconds)"
+    try:
+        video_path, info = _download_youtube_video(url)
+    except Exception as e:
+        return f"ERROR: could not download video {url}: {e}"
+
+    out_dir = video_path + ".zoom"
+    os.makedirs(out_dir, exist_ok=True)
+    prompt = (question.strip() or DEFAULT_IMAGE_ANALYSIS_PROMPT) + ZOOM_PROMPT_SUFFIX
+    results = []
+    for sec in stamps:
+        frame = os.path.join(out_dir, f"at_{sec:.1f}.jpg")
+        try:
+            subprocess.run(["ffmpeg", "-ss", f"{sec:.2f}", "-i", video_path, "-frames:v", "1", "-q:v", "2", frame, "-y"],
+                           capture_output=True, timeout=60, check=True)
+        except Exception as e:
+            results.append(f"[t={sec:g}s] ERROR: could not extract frame: {e}")
+            continue
+        if not os.path.exists(frame):
+            results.append(f"[t={sec:g}s] ERROR: no frame at that time (video is {info.get('duration')}s long)")
+            continue
+        results.append(f"[t={sec:g}s] " + analyze_image(frame, prompt, thinking=False, max_tokens=ZOOM_MAX_TOKENS))
+    return "\n\n".join(results)
+
+
+ANALYZE_YOUTUBE_FRAMES_AT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "analyze_youtube_frames_at",
+        "description": (
+            "Carefully analyze specific moments of a YouTube video (slow, more accurate). Use after "
+            "analyze_youtube_frames to inspect the 2-5 timestamps (seconds) where the most was "
+            "happening, e.g. where the most species/objects appeared together."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The YouTube video URL."},
+                "timestamps": {"type": "array", "items": {"type": "number"}, "description": "Seconds into the video (max 5)."},
+                "question": {"type": "string", "description": "What to determine about each frame."},
+            },
+            "required": ["url", "timestamps"],
         },
     },
 }
