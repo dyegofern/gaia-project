@@ -179,3 +179,53 @@ class TestFatalBackendErrors:
         from gaia_agent.llm import is_fatal_backend_error
         assert not is_fatal_backend_error(self._err(RateLimitError, 429, "slow down"))
         assert not is_fatal_backend_error(ValueError("x"))
+
+
+class TestProbeAndTimeouts:
+    def _status_err(self, status, msg):
+        from openai import APIStatusError
+        resp = MagicMock(); resp.request = MagicMock(); resp.status_code = status
+        return APIStatusError(msg, response=resp, body=None)
+
+    def test_probe_reports_exhausted_credits_even_when_listing_models_works(self):
+        from gaia_agent.llm import probe_backend
+        client = MagicMock()
+        client.chat.completions.create.side_effect = self._status_err(402, "depleted your monthly included credits")
+        with patch("gaia_agent.llm._get_client_and_model", return_value=(client, "m")):
+            ok, reason = probe_backend("hf")
+        assert not ok and "402" in reason and "credits" in reason
+
+    def test_probe_ok_sends_two_requests_for_cloud_one_for_lemonade(self):
+        from gaia_agent.llm import probe_backend
+        client = MagicMock()
+        with patch("gaia_agent.llm._get_client_and_model", return_value=(client, "m")):
+            assert probe_backend("groq") == (True, "ok")
+            assert client.chat.completions.create.call_count == 2
+            client.reset_mock()
+            assert probe_backend("lemonade") == (True, "ok")
+            assert client.chat.completions.create.call_count == 1
+
+    def test_probe_restores_backend_env(self, monkeypatch):
+        from gaia_agent.llm import probe_backend
+        monkeypatch.setenv("GAIA_LLM_BACKEND", "lemonade")
+        with patch("gaia_agent.llm._get_client_and_model", return_value=(MagicMock(), "m")):
+            probe_backend("groq")
+        assert os.environ["GAIA_LLM_BACKEND"] == "lemonade"
+
+    def test_timeouts_are_retried_once_not_five_times(self, monkeypatch):
+        from openai import APITimeoutError
+        from gaia_agent import llm
+        monkeypatch.setenv("GAIA_LLM_BACKEND", "lemonade")
+        client = MagicMock()
+        client.chat.completions.with_raw_response.create.side_effect = APITimeoutError(request=MagicMock())
+        with patch.object(llm, "_get_client_and_model", return_value=(client, "m")), patch("time.sleep"):
+            with pytest.raises(APITimeoutError):
+                llm.chat_completion([{"role": "user", "content": "hi"}])
+        assert client.chat.completions.with_raw_response.create.call_count == 2
+
+    def test_default_timeout_is_longer_for_lemonade(self, monkeypatch):
+        from gaia_agent.llm import _default_timeout
+        monkeypatch.delenv("GAIA_LLM_TIMEOUT", raising=False)
+        assert _default_timeout("lemonade") > _default_timeout("groq")
+        monkeypatch.setenv("GAIA_LLM_TIMEOUT", "42")
+        assert _default_timeout("groq") == 42

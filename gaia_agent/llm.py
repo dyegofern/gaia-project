@@ -5,7 +5,7 @@ import re
 import socket
 import time
 import requests
-from openai import OpenAI, RateLimitError, APIError
+from openai import OpenAI, RateLimitError, APIError, APITimeoutError
 import backoff
 
 _ipv4_patch_applied = False
@@ -197,24 +197,79 @@ def is_fatal_backend_error(e) -> bool:
     return getattr(e, "status_code", None) in FATAL_STATUS_CODES
 
 
+def _default_timeout(backend):
+    """Seconds to wait for one completion. Lemonade is a local, single-slot
+    server whose first request may also have to load the model."""
+    override = os.environ.get("GAIA_LLM_TIMEOUT")
+    if override:
+        return float(override)
+    return 300 if backend == "lemonade" else 120
+
+
+def _giveup(e):
+    # Fatal auth/billing errors can't be fixed by retrying; timeouts get their
+    # own (single) retry in chat_completion instead of the long backoff.
+    return is_fatal_backend_error(e) or isinstance(e, APITimeoutError)
+
+
+@backoff.on_exception(backoff.constant, APITimeoutError, max_tries=2, interval=1)
 @backoff.on_exception(
     backoff.expo,
     (RateLimitError, APIError),
     max_tries=5,
     max_time=3600,
-    giveup=is_fatal_backend_error,
+    giveup=_giveup,
     on_backoff=lambda details: print(f"Rate limited, waiting {details['elapsed']:.1f}s before retry...")
 )
-def chat_completion(messages, tools=None, timeout=120):
+def chat_completion(messages, tools=None, timeout=None):
     client, model = _get_client_and_model()
-    kwargs = {"model": model, "messages": messages, "timeout": timeout}
+    backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+    kwargs = {"model": model, "messages": messages,
+              "timeout": timeout if timeout is not None else _default_timeout(backend)}
     if tools:
         kwargs["tools"] = tools
-    backend = os.environ.get("GAIA_LLM_BACKEND", "lemonade")
     with _semaphore_for(backend):
         raw_response = client.chat.completions.with_raw_response.create(**kwargs)
     _maybe_wait_for_rate_limit(raw_response)
     return raw_response.parse()
+
+
+def probe_backend(backend=None, timeout=None):
+    """Make one real 1-token request and return (ok, reason).
+
+    Listing models is not enough: a Hugging Face account with no credits left
+    still lists models fine, then answers every completion with 402. On
+    Lemonade this also loads the model, which can take minutes the first time.
+    """
+    backend = backend or os.environ.get("GAIA_LLM_BACKEND", "lemonade")
+    previous = os.environ.get("GAIA_LLM_BACKEND")
+    os.environ["GAIA_LLM_BACKEND"] = backend
+    try:
+        client, model = _get_client_and_model()
+        # Two requests for cloud backends: an account that is nearly out of
+        # credits can pass one request and fail the next.
+        for _ in range(1 if backend == "lemonade" else 2):
+            client.chat.completions.create(
+                model=model, max_tokens=1, messages=[{"role": "user", "content": "Reply with OK"}],
+                timeout=timeout if timeout is not None else (600 if backend == "lemonade" else 30),
+            )
+        return True, "ok"
+    except RateLimitError as e:
+        return True, f"reachable but currently rate limited ({str(e)[:120]})"
+    except APITimeoutError:
+        return False, "request timed out" + (" (the model may still be loading)" if backend == "lemonade" else "")
+    except APIError as e:
+        if is_fatal_backend_error(e):
+            hint = {401: "API key rejected", 402: "credits/quota exhausted", 403: "access forbidden"}[e.status_code]
+            return False, f"{hint} (HTTP {e.status_code}): {str(getattr(e, 'message', e))[:200]}"
+        return False, f"{type(e).__name__}: {str(e)[:200]}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:200]}"
+    finally:
+        if previous is None:
+            os.environ.pop("GAIA_LLM_BACKEND", None)
+        else:
+            os.environ["GAIA_LLM_BACKEND"] = previous
 
 
 def check_backend_health(backend=None) -> bool:

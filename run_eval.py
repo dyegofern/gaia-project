@@ -10,7 +10,7 @@ import requests
 
 from gaia_agent.agent import BACKEND_FATAL_PREFIX, GaiaAgent, set_global_db
 from gaia_agent.results_db import DEFAULT_DB_PATH, DONE, ResultsDB
-from gaia_agent.llm import check_backend_health
+from gaia_agent.llm import check_backend_health, probe_backend
 
 DEFAULT_WORKERS = 10
 
@@ -303,6 +303,15 @@ def run_and_record(args, db):
         elif backend == "gemini":
             print("  - GEMINI_API_KEY environment variable is set")
         sys.exit(1)
+
+    # A real 1-token request: catches exhausted credits / bad keys that merely
+    # listing models doesn't, and warms up (loads) the model on Lemonade.
+    print(f"Probing {backend}" + (" (loads the model on first use; may take a few minutes)" if backend == "lemonade" else "") + "...", flush=True)
+    ok, reason = probe_backend(backend)
+    if not ok:
+        print(f"ERROR: Backend {backend} failed its probe request: {reason}", flush=True)
+        sys.exit(1)
+    print(f"Backend OK: {reason}", flush=True)
 
     if args.random:
         resp = requests.get(f"{SCORING_API_URL}/random-question", timeout=15)

@@ -96,6 +96,15 @@ Before running, validate the environment:
 8. **Better Error Messages** - Actionable error messages for common failures
 9. **Unit Tests** - Tests for new features
 
+## Debugging & Operations
+
+- **Transcripts** - every question's full conversation (tool calls + results) is stored in the `transcripts` table; click a question in the dashboard's run modal.
+- **Run logs** - runs started from the dashboard write to `logs/run-*.log` (path stored in `runs.log_path`); `--log-file` does the same from the CLI.
+- **Cancel** - the dashboard's Cancel sends SIGTERM to the run (`runs.pid`); in-flight questions return to pending, resume with Continue.
+- **Attachments** - the scoring API's `/files/<task_id>` currently returns 404. The agent looks in `files/<task_id>.<ext>` first (upload via the dashboard's Attachments card), then the scoring API, then the gated `gaia-benchmark/GAIA` dataset (needs an HF account with access).
+- **Preflight** - `probe_backend()` makes a real 1-token request before a run (catches exhausted credits that `check_backend_health` misses); billing/auth errors (401/402/403) stop a run and leave the rest pending.
+- `GAIA_LLM_TIMEOUT` overrides the per-request timeout (default 300s Lemonade, 120s cloud); `GAIA_FILES_DIR` overrides `files/`.
+
 ## Configuration
 
 - `GAIA_LLM_BACKEND` - LLM backend (lemonade, hf, groq, gemini)

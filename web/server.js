@@ -398,6 +398,24 @@ app.get('/api/run-progress', (req, res) => {
   }
 });
 
+app.post('/api/probe-backend', (req, res) => {
+  const backend = req.body?.backend;
+  if (!BACKENDS.includes(backend)) {
+    return res.status(400).json({ error: `Unknown backend '${backend}'` });
+  }
+  const code = 'import json; from gaia_agent.llm import probe_backend; ok, reason = probe_backend(); print(json.dumps({"ok": ok, "reason": reason}))';
+  execFile('/home/dyego/rocm10-test/bin/python', ['-c', code],
+    { cwd: join(__dirname, '..'), timeout: 660000, env: { ...process.env, GAIA_LLM_BACKEND: backend } },
+    (error, stdout, stderr) => {
+      if (error) return res.status(500).json({ ok: false, reason: (stderr || error.message).slice(-300) });
+      try {
+        res.json(JSON.parse(stdout.trim().split('\n').pop()));
+      } catch {
+        res.status(500).json({ ok: false, reason: 'Unreadable probe output' });
+      }
+    });
+});
+
 const BACKEND_ENV_KEYS = { groq: 'GROQ_API_KEY', hf: 'HF_TOKEN', gemini: 'GEMINI_API_KEY' };
 const BACKENDS = ['lemonade', ...Object.keys(BACKEND_ENV_KEYS)];
 
