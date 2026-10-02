@@ -330,6 +330,20 @@
           </button>
         </div>
         <div style="margin-top: 15px;">
+          <label style="font-size: 12px; color: var(--text-secondary);">Backend:</label>
+          <select id="backendSelect" style="
+            padding: 8px;
+            margin-right: 15px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+          ">
+            <option value="lemonade" selected>Lemonade (local)</option>
+            <option value="groq">Groq</option>
+            <option value="hf">Hugging Face</option>
+            <option value="gemini">Gemini</option>
+          </select>
           <label style="font-size: 12px; color: var(--text-secondary);">Workers:</label>
           <input type="number" id="workerCount" value="10" min="1" max="50" style="
             width: 80px;
@@ -421,6 +435,15 @@
           document.getElementById('health-lemonade').className = 'health-dot healthy';
         } else {
           document.getElementById('health-lemonade').className = 'health-dot unhealthy';
+        }
+
+        for (const b of ['lemonade', 'groq', 'hf', 'gemini']) {
+          const opt = document.querySelector(`#backendSelect option[value="${b}"]`);
+          if (opt) {
+            const label = opt.dataset.label || (opt.dataset.label = opt.textContent);
+            opt.disabled = !data.health[b];
+            opt.textContent = data.health[b] ? label : `${label} (unavailable)`;
+          }
         }
 
         document.getElementById('health-groq').className = 'health-dot ' + (data.health.groq ? 'healthy' : 'unhealthy');
@@ -534,20 +557,21 @@
 
     async function startRun(type) {
       const workers = document.getElementById('workerCount').value;
+      const backend = document.getElementById('backendSelect').value;
 
       try {
         const res = await fetch('/api/trigger-run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type, workers: parseInt(workers) })
+          body: JSON.stringify({ type, workers: parseInt(workers), backend })
         });
 
         const data = await res.json();
 
-        addLog('info', `Run ${type} started with ${workers} workers`);
-
-        if (!data.success) {
-          addLog('error', `Failed to start run: ${data.message}`);
+        if (!res.ok || !data.success) {
+          addLog('error', `Failed to start run: ${data.error || data.message}`);
+        } else {
+          addLog('info', `Run ${type} started on ${backend} with ${workers} workers`);
         }
       } catch (error) {
         addLog('error', `Failed to start run: ${error.message}`);

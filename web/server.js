@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import initSqlJs from 'sql.js';
 import cors from 'cors';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, statSync, readFileSync } from 'fs';
@@ -253,36 +253,43 @@ app.get('/api/run-progress', (req, res) => {
   }
 });
 
-app.post('/api/trigger-run', (req, res) => {
+const BACKEND_ENV_KEYS = { groq: 'GROQ_API_KEY', hf: 'HF_TOKEN', gemini: 'GEMINI_API_KEY' };
+const BACKENDS = ['lemonade', ...Object.keys(BACKEND_ENV_KEYS)];
+
+app.post('/api/trigger-run', async (req, res) => {
   try {
-    const { type, workers } = req.body;
+    const { type, workers, backend = 'lemonade' } = req.body;
     const workersArg = Number.parseInt(workers, 10);
     if (!Number.isInteger(workersArg) || workersArg < 1 || workersArg > 64) {
       return res.status(400).json({ error: 'workers must be an integer between 1 and 64' });
     }
+    if (!BACKENDS.includes(backend)) {
+      return res.status(400).json({ error: `Unknown backend '${backend}'` });
+    }
+    if (!(await checkBackendHealth(backend))) {
+      const why = backend === 'lemonade'
+        ? 'Lemonade is not reachable on localhost:13305'
+        : `${BACKEND_ENV_KEYS[backend]} is not set on the server`;
+      return res.status(400).json({ error: `Backend '${backend}' unavailable: ${why}` });
+    }
 
-    const pythonBin = '/home/dyego/rocm10-test/bin/python';
-    const scriptPath = join(__dirname, '..', 'run_eval.py');
-
-    let command;
-    if (type === 'random') {
-      command = `${pythonBin} ${scriptPath} --random --workers ${workersArg}`;
-    } else if (type === 'all') {
-      command = `${pythonBin} ${scriptPath} --workers ${workersArg}`;
-    } else if (type === 'continue') {
-      command = `${pythonBin} ${scriptPath} --continue --workers ${workersArg}`;
-    } else {
+    const typeFlags = { random: ['--random'], all: [], continue: ['--continue'] };
+    if (!(type in typeFlags)) {
       return res.status(400).json({ error: 'Invalid run type' });
     }
 
-    exec(command, { timeout: 3600000 }, (error, stdout, stderr) => {
-      // Run is in background - don't send response here
-      if (error) {
-        console.error('Run error:', error.message);
-      }
-    });
+    const pythonBin = '/home/dyego/rocm10-test/bin/python';
+    const scriptPath = join(__dirname, '..', 'run_eval.py');
+    const args = [scriptPath, ...typeFlags[type], '--workers', String(workersArg)];
 
-    res.json({ success: true, message: 'Run started in background' });
+    // Run in the background; the backend is chosen via the env var the agent reads.
+    execFile(pythonBin, args,
+      { timeout: 3600000, env: { ...process.env, GAIA_LLM_BACKEND: backend } },
+      (error) => {
+        if (error) console.error('Run error:', error.message);
+      });
+
+    res.json({ success: true, message: `Run started in background on ${backend}` });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
