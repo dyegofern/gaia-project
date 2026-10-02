@@ -10,6 +10,8 @@ from gaia_agent.answers import clean_answer
     ("`Rd5`", "Rd5"),
     ("FINAL ANSWER: 42", "42"),
     ("  broccoli, celery, fresh basil.  ", "broccoli, celery, fresh basil"),
+    ("89706.00**", "89706.00"),
+    ("**89706.00", "89706.00"),
     ("3.5", "3.5"),            # decimals untouched
     ("U.S.A.", "U.S.A."),      # abbreviation period kept
     ("Saint Petersburg", "Saint Petersburg"),

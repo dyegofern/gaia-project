@@ -23,6 +23,9 @@ def clean_answer(text: str) -> str:
             if answer.startswith(w) and answer.endswith(w) and len(answer) > 2 * len(w):
                 answer = answer[len(w):-len(w)].strip()
                 changed = True
+    # Unbalanced emphasis left behind when a "**FINAL ANSWER: x**" line is split
+    # on the marker. Asterisks/backticks are never part of an expected answer.
+    answer = re.sub(r"^[*`]+|[*`]+$", "", answer).strip()
     # A sentence-ending period/exclamation is never part of the expected
     # answer, but keep an abbreviation's period ("U.S.", "St.") and decimals.
     if re.search(r"[A-Za-z0-9À-ɏ][.!]$", answer) and not re.search(r"(?:\b[A-Za-z]\.){2,}$", answer):
