@@ -87,6 +87,63 @@ SCORING_API_URL = "https://agents-course-unit4-scoring.hf.space"
 SCRATCH_DIR = os.path.join(os.path.dirname(__file__), "..", ".scratch")
 
 
+WAYBACK_AVAILABLE_URL = "https://archive.org/wayback/available"
+WAYBACK_RETRY_DELAYS = (5, 15, 30)
+
+
+def fetch_archived_page(url: str, date: str) -> str:
+    """Fetch the Wayback Machine snapshot of `url` closest to `date` (YYYYMMDD
+    or YYYY-MM-DD), for questions about how something stood at a past date --
+    live pages show today's state (a roster, a Wikipedia article, a price...)."""
+    stamp = re.sub(r"\D", "", str(date))[:14]
+    if len(stamp) < 4:
+        return "ERROR: date must look like YYYYMMDD (e.g. 20230715)"
+    stamp = stamp.ljust(8, "0")[:8] if len(stamp) < 8 else stamp
+
+    def get(target, **kw):
+        # archive.org rate-limits aggressively (429); back off and retry.
+        for delay in (0,) + WAYBACK_RETRY_DELAYS:
+            if delay:
+                time.sleep(delay)
+            resp = requests.get(target, timeout=60, headers=BROWSER_HEADERS, **kw)
+            if resp.status_code != 429:
+                return resp
+        return resp
+
+    try:
+        meta = get(WAYBACK_AVAILABLE_URL, params={"url": url, "timestamp": stamp}).json()
+        snap = (meta.get("archived_snapshots") or {}).get("closest")
+        if not snap:
+            return f"ERROR: no Wayback Machine snapshot of {url} near {stamp}"
+        resp = get(snap["url"].replace("http://", "https://"))
+        resp.raise_for_status()
+    except Exception as e:
+        return f"ERROR: could not fetch an archived copy of {url}: {e}"
+    text = trafilatura.extract(resp.text, with_metadata=False) or resp.text
+    return f"[Archived snapshot taken {snap['timestamp']}: {snap['url']}]\n" + text[:MAX_PAGE_CHARS]
+
+
+FETCH_ARCHIVED_PAGE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "fetch_archived_page",
+        "description": (
+            "Fetch an old (Wayback Machine) snapshot of a web page, closest to a date. Use when the "
+            "question is about a specific past date ('as of July 2023', 'the 2022 version'): live pages "
+            "show today's state, which can differ (rosters, jersey numbers, officeholders, article text)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The page's current URL."},
+                "date": {"type": "string", "description": "Target date, YYYYMMDD (e.g. 20230715)."},
+            },
+            "required": ["url", "date"],
+        },
+    },
+}
+
+
 DOWNLOAD_GAIA_FILE_MAX_RETRIES = 3
 DOWNLOAD_GAIA_FILE_RETRY_DELAY = 3
 GAIA_DATASET_FILE_URL = "https://huggingface.co/datasets/gaia-benchmark/GAIA/resolve/main/2023/validation/{name}"

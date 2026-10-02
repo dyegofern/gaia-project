@@ -10,6 +10,7 @@ from gaia_agent.llm import chat_completion, is_fatal_backend_error
 from gaia_agent.tools import (
     web_search, WEB_SEARCH_SCHEMA,
     fetch_page, FETCH_PAGE_SCHEMA,
+    fetch_archived_page, FETCH_ARCHIVED_PAGE_SCHEMA,
     download_gaia_file, DOWNLOAD_GAIA_FILE_SCHEMA, attachment_hint,
     read_file, READ_FILE_SCHEMA,
     python_exec, PYTHON_EXEC_SCHEMA,
@@ -24,7 +25,7 @@ from gaia_agent.tools import (
 
 SYSTEM_PROMPT = """You are a general-purpose research assistant answering benchmark questions.
 
-You have access to tools: web_search, fetch_page, download_gaia_file, read_file,
+You have access to tools: web_search, fetch_page, fetch_archived_page, download_gaia_file, read_file,
 python_exec, transcribe_audio, transcribe_youtube_video, analyze_youtube_frames,
 analyze_youtube_frames_at,
 analyze_image, read_chess_board_image, best_chess_moves.
@@ -46,6 +47,13 @@ If download_gaia_file returns an ERROR, the attachment is unavailable: do NOT gu
 paths or call read_file/transcribe_audio/analyze_image on invented names. Reply with
 FINAL ANSWER: Unable to access the attached file (unless the question can be answered
 fully without the file).
+
+Dates matter. If the question says "as of <date>", "in <year>", or "the <year> version", the
+answer must reflect that moment, NOT today. Live pages (current rosters, jersey numbers,
+officeholders, the current Wikipedia text) usually show today's state. Check dated sources
+(season/year-specific pages, or fetch_archived_page for a snapshot near the date), and for
+any person or item you intend to name, confirm they held that role/number/state AT that date
+(e.g. when they joined or left).
 
 Never search the web for the task_id itself or for "GAIA benchmark answer" or similar --
 answer keys or discussions of this exact question may be indexed online, but using them
@@ -71,6 +79,7 @@ to each element, with exactly one space after each comma."""
 TOOLS = [
     WEB_SEARCH_SCHEMA,
     FETCH_PAGE_SCHEMA,
+    FETCH_ARCHIVED_PAGE_SCHEMA,
     DOWNLOAD_GAIA_FILE_SCHEMA,
     READ_FILE_SCHEMA,
     PYTHON_EXEC_SCHEMA,
@@ -86,6 +95,7 @@ TOOLS = [
 _TOOL_FUNCTIONS = {
     "web_search": web_search,
     "fetch_page": fetch_page,
+    "fetch_archived_page": fetch_archived_page,
     "download_gaia_file": download_gaia_file,
     "read_file": read_file,
     "python_exec": python_exec,

@@ -227,3 +227,28 @@ def test_submission_is_recorded_per_run(db):
     [s] = db.submissions(run)
     assert (s["username"], s["score"], s["correct_count"]) == ("u", 90.0, 18)
     assert db.submissions(run + 1) == [] and len(db.submissions()) == 1
+
+
+def test_archived_page_retries_429_then_returns_snapshot(monkeypatch):
+    seen = []
+    def fake_get(url, **kw):
+        seen.append(url)
+        r = MagicMock(status_code=200, text="<html><body><p>Roster 18 Yoshida</p></body></html>")
+        r.raise_for_status = lambda: None
+        if "available" in url:
+            r.json = lambda: {"archived_snapshots": {"closest": {"url": "http://web.archive.org/web/20230609/https://x/y", "timestamp": "20230609172759"}}}
+            if seen.count(url) == 1:
+                r.status_code = 429          # first availability call is rate limited
+        return r
+    monkeypatch.setattr(tools.requests, "get", fake_get)
+    monkeypatch.setattr(tools.time, "sleep", lambda s: None)
+    out = tools.fetch_archived_page("https://x/y", "2023-07-15")
+    assert out.startswith("[Archived snapshot taken 20230609172759") and "Yoshida" in out
+    assert any(u.startswith("https://web.archive.org/web/2023") for u in seen)
+
+
+def test_archived_page_rejects_bad_date_and_reports_missing_snapshot(monkeypatch):
+    assert tools.fetch_archived_page("https://x", "soon").startswith("ERROR")
+    r = MagicMock(status_code=200); r.json = lambda: {"archived_snapshots": {}}
+    monkeypatch.setattr(tools.requests, "get", lambda *a, **k: r)
+    assert "no Wayback Machine snapshot" in tools.fetch_archived_page("https://x", "20230715")
