@@ -324,7 +324,7 @@ app.get('/api/run/:runId/task/:taskId', (req, res) => {
 const PYTHON_BIN = '/home/dyego/rocm10-test/bin/python';
 
 app.get('/api/submit-defaults', (req, res) => {
-  const last = gaiaQuery('SELECT username, agent_code FROM submissions ORDER BY id DESC LIMIT 1')[0] || {};
+  const last = gaiaQuery('SELECT username, agent_code FROM submissions ORDER BY score DESC, id ASC LIMIT 1')[0] || {};  // best, not latest: a bad one-off must not become the default
   res.json({ username: last.username || process.env.GAIA_SUBMIT_USERNAME || '',
              agent_code: last.agent_code || process.env.GAIA_AGENT_CODE || '' });
 });
